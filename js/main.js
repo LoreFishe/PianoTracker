@@ -1,6 +1,15 @@
 import { initMidi, midiNoteToName } from "./midi.js";
 import { NoteMatcher, getStaffPositionForNote, getNotePixelPosition } from "./matching.js";
-import { getAllFiles, getFile, putFile, deleteFile } from "./db.js";
+import {
+  putFileContent,
+  getFileContent,
+  getAllFileContents,
+  deleteFileContent,
+  putProgress,
+  getProgress,
+  getAllProgress,
+  deleteProgress,
+} from "./db.js";
 import { renderLibraryList, readUploadedFile } from "./library.js";
 
 const SAMPLE_FILE_URL = "samples/sample-grand-staff.musicxml";
@@ -37,21 +46,49 @@ function showPracticeView() {
   practiceView.hidden = false;
 }
 
+const DEFAULT_SETTINGS = { octaveStrict: true };
+const DEFAULT_PROGRESS = { stepIndex: 0, completed: false };
+
+async function getLibraryEntries() {
+  const [files, progressRecords] = await Promise.all([getAllFileContents(), getAllProgress()]);
+  const progressById = new Map(progressRecords.map((p) => [p.id, p]));
+  return files.map((file) => {
+    const p = progressById.get(file.id);
+    return {
+      id: file.id,
+      fileName: file.fileName,
+      settings: p?.settings ?? DEFAULT_SETTINGS,
+      progress: p?.progress ?? DEFAULT_PROGRESS,
+      updatedAt: p?.updatedAt ?? file.createdAt,
+    };
+  });
+}
+
 async function refreshLibraryList() {
-  const entries = await getAllFiles();
+  const entries = await getLibraryEntries();
   renderLibraryList(libraryList, entries, {
     onOpen: openPiece,
     onDelete: async (id) => {
-      await deleteFile(id);
+      await Promise.all([deleteFileContent(id), deleteProgress(id)]);
       refreshLibraryList();
     },
   });
 }
 
+// Only the small { id, settings, progress, updatedAt } record is written here —
+// never the file's MusicXML text, which can be several MB. IndexedDB has no
+// partial-update API, so including it would mean re-serializing and rewriting
+// the whole score on every single note advance (this was the actual cause of
+// multi-second per-keystroke lag on real pieces).
 function saveCurrentEntry() {
   if (!currentEntry) return;
   currentEntry.updatedAt = Date.now();
-  putFile(currentEntry).catch((err) => console.error("Failed to save progress:", err));
+  putProgress({
+    id: currentEntry.id,
+    settings: currentEntry.settings,
+    progress: currentEntry.progress,
+    updatedAt: currentEntry.updatedAt,
+  }).catch((err) => console.error("Failed to save progress:", err));
 }
 
 function renderExpectedNotes(expected) {
@@ -157,12 +194,15 @@ function applyFeedbackVisuals({ wrong, correctSoFar }) {
 }
 
 async function openPiece(id) {
-  const entry = await getFile(id);
-  if (!entry) return;
+  const [fileContent, progressRecord] = await Promise.all([getFileContent(id), getProgress(id)]);
+  if (!fileContent) return;
 
-  currentEntry = entry;
+  const settings = progressRecord?.settings ?? DEFAULT_SETTINGS;
+  const progress = progressRecord?.progress ?? DEFAULT_PROGRESS;
+  currentEntry = { id, fileName: fileContent.fileName, settings: { ...settings }, progress: { ...progress } };
+
   showPracticeView();
-  document.getElementById("practice-title").textContent = entry.fileName;
+  document.getElementById("practice-title").textContent = fileContent.fileName;
 
   const container = document.getElementById("osmd-container");
   container.innerHTML = "";
@@ -179,17 +219,17 @@ async function openPiece(id) {
     });
     osmdInstance = osmd;
 
-    await osmd.load(entry.musicXmlText);
+    await osmd.load(fileContent.musicXmlText);
     osmd.render();
 
-    octaveStrictToggle.checked = entry.settings.octaveStrict;
+    octaveStrictToggle.checked = currentEntry.settings.octaveStrict;
 
-    matcher = new NoteMatcher(osmd, { octaveStrict: entry.settings.octaveStrict });
+    matcher = new NoteMatcher(osmd, { octaveStrict: currentEntry.settings.octaveStrict });
     matcher.onAdvance = renderExpectedNotes;
     matcher.onComplete = renderComplete;
     matcher.onFeedbackChange = applyFeedbackVisuals;
     matcher.onNotePlayed = trackPlayedNote;
-    matcher.start(entry.progress.stepIndex || 0);
+    matcher.start(currentEntry.progress.stepIndex || 0);
   } catch (err) {
     console.error("Failed to load piece:", err);
     container.textContent = "Failed to load this piece. The file may be corrupted or not valid MusicXML.";
@@ -215,18 +255,14 @@ fileUpload.addEventListener("change", async () => {
 
   try {
     const musicXmlText = await readUploadedFile(file);
-    const entry = {
-      id: crypto.randomUUID(),
-      fileName: file.name,
-      musicXmlText,
-      settings: { octaveStrict: true },
-      progress: { stepIndex: 0, completed: false },
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    };
-    await putFile(entry);
+    const id = crypto.randomUUID();
+    const now = Date.now();
+    await Promise.all([
+      putFileContent({ id, fileName: file.name, musicXmlText, createdAt: now }),
+      putProgress({ id, settings: { ...DEFAULT_SETTINGS }, progress: { ...DEFAULT_PROGRESS }, updatedAt: now }),
+    ]);
     fileUpload.value = "";
-    openPiece(entry.id);
+    openPiece(id);
   } catch (err) {
     console.error("Failed to read uploaded file:", err);
     uploadError.textContent = `Couldn't read "${file.name}": ${err.message}`;
@@ -236,19 +272,16 @@ fileUpload.addEventListener("change", async () => {
 });
 
 async function initLibrary() {
-  const entries = await getAllFiles();
-  if (entries.length === 0) {
+  const files = await getAllFileContents();
+  if (files.length === 0) {
     const response = await fetch(SAMPLE_FILE_URL);
     const musicXmlText = await response.text();
-    await putFile({
-      id: crypto.randomUUID(),
-      fileName: SAMPLE_FILE_NAME,
-      musicXmlText,
-      settings: { octaveStrict: true },
-      progress: { stepIndex: 0, completed: false },
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    });
+    const id = crypto.randomUUID();
+    const now = Date.now();
+    await Promise.all([
+      putFileContent({ id, fileName: SAMPLE_FILE_NAME, musicXmlText, createdAt: now }),
+      putProgress({ id, settings: { ...DEFAULT_SETTINGS }, progress: { ...DEFAULT_PROGRESS }, updatedAt: now }),
+    ]);
   }
   await refreshLibraryList();
 }
