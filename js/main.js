@@ -1,5 +1,5 @@
 import { initMidi, midiNoteToName } from "./midi.js";
-import { NoteMatcher, getStaffPositionForNote } from "./matching.js";
+import { NoteMatcher, getStaffPositionForNote, getNotePixelPosition } from "./matching.js";
 import { getAllFiles, getFile, putFile, deleteFile } from "./db.js";
 import { renderLibraryList, readUploadedFile } from "./library.js";
 
@@ -9,11 +9,11 @@ const MAX_LOG_ENTRIES = 100;
 const STAFF_LABELS = { 1: "Right hand", 2: "Left hand" };
 const WRONG_NOTEHEAD_COLOR = "#CC0000";
 const CORRECT_NOTEHEAD_COLOR = "#1A7F37";
+const SVG_NS = "http://www.w3.org/2000/svg";
 
 let matcher = null;
 let osmdInstance = null;
 let currentEntry = null;
-let coloredNotes = []; // Note objects currently painted red or green
 let heldNoteMarkers = new Map(); // midi -> isCorrect, for notes currently held down
 
 const libraryView = document.getElementById("library-view");
@@ -90,6 +90,30 @@ function trackPlayedNote(midi, isCorrect) {
   heldNoteMarkers.set(midi, isCorrect);
 }
 
+function makeMarker(className, x, y, { filled, color }) {
+  const marker = document.createElementNS(SVG_NS, "ellipse");
+  marker.setAttribute("cx", x);
+  marker.setAttribute("cy", y);
+  marker.setAttribute("rx", filled ? "5.5" : "7");
+  marker.setAttribute("ry", filled ? "4.5" : "6");
+  marker.setAttribute("class", className);
+  if (filled) {
+    marker.setAttribute("fill", color);
+    marker.setAttribute("fill-opacity", "0.7");
+    marker.setAttribute("stroke", "#ffffff");
+    marker.setAttribute("stroke-width", "1");
+  } else {
+    marker.setAttribute("fill", "none");
+    marker.setAttribute("stroke", color);
+    marker.setAttribute("stroke-width", "2.5");
+  }
+  return marker;
+}
+
+// Both marker layers are plain SVG overlay elements added/removed directly —
+// never through osmd.render(), which re-lays-out and redraws the *entire*
+// score. That's fine for a few measures but takes seconds on a real piece,
+// so per-keystroke feedback must never trigger it.
 function redrawPlayedNoteMarkers() {
   const svg = document.querySelector("#osmd-container svg");
   if (!svg) return;
@@ -100,48 +124,35 @@ function redrawPlayedNoteMarkers() {
   for (const [midi, isCorrect] of heldNoteMarkers) {
     const pos = getStaffPositionForNote(osmdInstance, matcher.expected, midi);
     if (!pos) continue;
+    svg.appendChild(
+      makeMarker("played-note-marker", pos.x, pos.y, {
+        filled: true,
+        color: isCorrect ? CORRECT_NOTEHEAD_COLOR : WRONG_NOTEHEAD_COLOR,
+      })
+    );
+  }
+}
 
-    const marker = document.createElementNS("http://www.w3.org/2000/svg", "ellipse");
-    marker.setAttribute("cx", pos.x);
-    marker.setAttribute("cy", pos.y);
-    marker.setAttribute("rx", "5.5");
-    marker.setAttribute("ry", "4.5");
-    marker.setAttribute("fill", isCorrect ? CORRECT_NOTEHEAD_COLOR : WRONG_NOTEHEAD_COLOR);
-    marker.setAttribute("fill-opacity", "0.7");
-    marker.setAttribute("stroke", "#ffffff");
-    marker.setAttribute("stroke-width", "1");
-    marker.setAttribute("class", "played-note-marker");
-    svg.appendChild(marker);
+function redrawTargetNoteMarkers(wrong, correctSoFar) {
+  const svg = document.querySelector("#osmd-container svg");
+  if (!svg) return;
+
+  svg.querySelectorAll(".target-note-marker").forEach((el) => el.remove());
+  if (!matcher) return;
+
+  const isWrong = wrong.length > 0;
+  const entries = isWrong ? matcher.expected : correctSoFar;
+  const color = isWrong ? WRONG_NOTEHEAD_COLOR : CORRECT_NOTEHEAD_COLOR;
+
+  for (const entry of entries) {
+    const pos = getNotePixelPosition(osmdInstance, entry.note);
+    if (!pos) continue;
+    svg.appendChild(makeMarker("target-note-marker", pos.x, pos.y, { filled: false, color }));
   }
 }
 
 function applyFeedbackVisuals({ wrong, correctSoFar }) {
-  const isWrong = wrong.length > 0;
-
-  // Reset every previously-colored notehead, then re-color: red for the
-  // target notes while a wrong note is held, green for expected notes
-  // already correctly held (partial chord progress), visible at a glance.
-  for (const note of coloredNotes) {
-    note.NoteheadColor = undefined;
-  }
-  coloredNotes = [];
-
-  if (isWrong) {
-    for (const entry of matcher.expected) {
-      entry.note.NoteheadColor = WRONG_NOTEHEAD_COLOR;
-      coloredNotes.push(entry.note);
-    }
-  } else {
-    for (const entry of correctSoFar) {
-      entry.note.NoteheadColor = CORRECT_NOTEHEAD_COLOR;
-      coloredNotes.push(entry.note);
-    }
-  }
-
-  if (osmdInstance) {
-    osmdInstance.render();
-    osmdInstance.cursor.show();
-  }
+  redrawTargetNoteMarkers(wrong, correctSoFar);
   redrawPlayedNoteMarkers();
 }
 
@@ -157,7 +168,6 @@ async function openPiece(id) {
   container.innerHTML = "";
   document.getElementById("expected-notes").textContent = "Loading score…";
 
-  coloredNotes = [];
   heldNoteMarkers = new Map();
 
   try {

@@ -43,6 +43,19 @@ export function getStaffPositionForNote(osmd, expected, midi) {
   }
 }
 
+/** Direct pixel position of a specific Note's rendered position — used for
+ * highlighting expected/target notes, where we already have the exact Note
+ * object rather than needing to guess the closest one. */
+export function getNotePixelPosition(osmd, note) {
+  try {
+    const gnote = osmd.rules.GNote(note);
+    const pos = gnote.PositionAndShape.AbsolutePosition;
+    return { x: pos.x * UNIT_TO_PX, y: pos.y * UNIT_TO_PX };
+  } catch {
+    return null;
+  }
+}
+
 function expectedNotesAtCursor(osmd) {
   return osmd.cursor
     .NotesUnderCursor()
