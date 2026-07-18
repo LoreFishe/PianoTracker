@@ -11,6 +11,21 @@ body {
   padding: 2rem;
 }
 
+#expected-notes {
+  margin-top: 1rem;
+  padding: 0.75rem 1rem;
+  background: #eef4ff;
+  border: 1px solid #cddcf7;
+  border-radius: 8px;
+  font-weight: 600;
+}
+
+#expected-notes.complete {
+  background: #e9f9ee;
+  border-color: #bfe8cc;
+  color: #1a7f37;
+}
+
 #midi-debug {
   margin-top: 2rem;
   padding: 1rem;
