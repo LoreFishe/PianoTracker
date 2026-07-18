@@ -5,20 +5,38 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Piano Practice Tracker</title>
   <link rel="stylesheet" href="css/styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/opensheetmusicdisplay@2.0.0/build/opensheetmusicdisplay.min.js"></script>
 </head>
 <body>
   <main id="app">
     <h1>Piano Practice Tracker</h1>
-    <section id="settings">
-      <label>
-        <input type="checkbox" id="octave-strict-toggle" checked>
-        Octave-strict matching
-      </label>
+
+    <section id="library-view">
+      <div id="library-controls">
+        <label class="upload-button">
+          Upload a piece
+          <input type="file" id="file-upload" accept=".musicxml,.xml,.mxl" hidden>
+        </label>
+        <span id="upload-error" hidden></span>
+      </div>
+      <ul id="library-list"></ul>
     </section>
 
-    <div id="osmd-container"></div>
-    <p id="expected-notes">Loading score&hellip;</p>
+    <section id="practice-view" hidden>
+      <button id="back-to-library" type="button">&larr; Back to library</button>
+      <h2 id="practice-title"></h2>
+
+      <section id="settings">
+        <label>
+          <input type="checkbox" id="octave-strict-toggle" checked>
+          Octave-strict matching
+        </label>
+      </section>
+
+      <div id="osmd-container"></div>
+      <p id="expected-notes">Loading score&hellip;</p>
+    </section>
 
     <details id="midi-debug">
       <summary>MIDI Debug</summary>

@@ -75,11 +75,21 @@ export class NoteMatcher {
     this.onFeedbackChange = null;
     // (midi: number, isCorrect: boolean) => void — fired for every key press
     this.onNotePlayed = null;
+    // Total raw cursor.next() calls since reset (both from real matches and
+    // internal rest-skipping) — a stable position marker for resuming later.
+    this.totalAdvances = 0;
   }
 
-  start() {
+  /** Starts the cursor at the beginning, then fast-forwards `resumeSteps`
+   * raw advances to resume a previously saved position. */
+  start(resumeSteps = 0) {
     this.osmd.cursor.show();
     this.osmd.cursor.reset();
+    this.totalAdvances = 0;
+    for (let i = 0; i < resumeSteps; i++) {
+      this.osmd.cursor.next();
+      this.totalAdvances++;
+    }
     this._updateExpected();
   }
 
@@ -118,6 +128,7 @@ export class NoteMatcher {
     if (this.expected.length === 0) {
       // Rest-only position for both hands: nothing to wait for, skip ahead.
       this.osmd.cursor.next();
+      this.totalAdvances++;
       this._updateExpected();
       return;
     }
@@ -133,6 +144,7 @@ export class NoteMatcher {
     if (allHeld) {
       this.graceNotes = new Set(this.heldNotes);
       this.osmd.cursor.next();
+      this.totalAdvances++;
       this._updateExpected();
     } else {
       this._recomputeFeedback();

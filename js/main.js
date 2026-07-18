@@ -1,7 +1,10 @@
 import { initMidi, midiNoteToName } from "./midi.js";
 import { NoteMatcher, getStaffPositionForNote } from "./matching.js";
+import { getAllFiles, getFile, putFile, deleteFile } from "./db.js";
+import { renderLibraryList, readUploadedFile } from "./library.js";
 
 const SAMPLE_FILE_URL = "samples/sample-grand-staff.musicxml";
+const SAMPLE_FILE_NAME = "Sample Grand Staff Exercise.musicxml";
 const MAX_LOG_ENTRIES = 100;
 const STAFF_LABELS = { 1: "Right hand", 2: "Left hand" };
 const WRONG_NOTEHEAD_COLOR = "#CC0000";
@@ -9,8 +12,47 @@ const CORRECT_NOTEHEAD_COLOR = "#1A7F37";
 
 let matcher = null;
 let osmdInstance = null;
+let currentEntry = null;
 let coloredNotes = []; // Note objects currently painted red or green
 let heldNoteMarkers = new Map(); // midi -> isCorrect, for notes currently held down
+
+const libraryView = document.getElementById("library-view");
+const practiceView = document.getElementById("practice-view");
+const libraryList = document.getElementById("library-list");
+const fileUpload = document.getElementById("file-upload");
+const uploadError = document.getElementById("upload-error");
+const octaveStrictToggle = document.getElementById("octave-strict-toggle");
+
+function showLibraryView() {
+  matcher = null;
+  osmdInstance = null;
+  currentEntry = null;
+  practiceView.hidden = true;
+  libraryView.hidden = false;
+  refreshLibraryList();
+}
+
+function showPracticeView() {
+  libraryView.hidden = true;
+  practiceView.hidden = false;
+}
+
+async function refreshLibraryList() {
+  const entries = await getAllFiles();
+  renderLibraryList(libraryList, entries, {
+    onOpen: openPiece,
+    onDelete: async (id) => {
+      await deleteFile(id);
+      refreshLibraryList();
+    },
+  });
+}
+
+function saveCurrentEntry() {
+  if (!currentEntry) return;
+  currentEntry.updatedAt = Date.now();
+  putFile(currentEntry).catch((err) => console.error("Failed to save progress:", err));
+}
 
 function renderExpectedNotes(expected) {
   const el = document.getElementById("expected-notes");
@@ -24,12 +66,24 @@ function renderExpectedNotes(expected) {
   );
   el.textContent = `Waiting for — ${parts.join("   |   ")}`;
   el.classList.remove("complete");
+
+  if (currentEntry) {
+    currentEntry.progress.stepIndex = matcher.totalAdvances;
+    currentEntry.progress.completed = false;
+    saveCurrentEntry();
+  }
 }
 
 function renderComplete() {
   const el = document.getElementById("expected-notes");
   el.textContent = "Piece complete!";
   el.classList.add("complete");
+
+  if (currentEntry) {
+    currentEntry.progress.stepIndex = matcher.totalAdvances;
+    currentEntry.progress.completed = true;
+    saveCurrentEntry();
+  }
 }
 
 function trackPlayedNote(midi, isCorrect) {
@@ -91,39 +145,107 @@ function applyFeedbackVisuals({ wrong, correctSoFar }) {
   redrawPlayedNoteMarkers();
 }
 
-async function loadSample() {
+async function openPiece(id) {
+  const entry = await getFile(id);
+  if (!entry) return;
+
+  currentEntry = entry;
+  showPracticeView();
+  document.getElementById("practice-title").textContent = entry.fileName;
+
   const container = document.getElementById("osmd-container");
-  const osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay(container, {
-    autoResize: true,
-    drawTitle: true,
-    followCursor: true,
-    cursorsOptions: [{ type: opensheetmusicdisplay.CursorType.Standard, color: "#3B82F6", alpha: 0.25, follow: true }],
-  });
-  osmdInstance = osmd;
+  container.innerHTML = "";
+  document.getElementById("expected-notes").textContent = "Loading score…";
 
-  const response = await fetch(SAMPLE_FILE_URL);
-  const musicXmlText = await response.text();
+  coloredNotes = [];
+  heldNoteMarkers = new Map();
 
-  await osmd.load(musicXmlText);
-  osmd.render();
+  try {
+    const osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay(container, {
+      autoResize: true,
+      drawTitle: true,
+      followCursor: true,
+      cursorsOptions: [{ type: opensheetmusicdisplay.CursorType.Standard, color: "#3B82F6", alpha: 0.25, follow: true }],
+    });
+    osmdInstance = osmd;
 
-  const octaveStrictToggle = document.getElementById("octave-strict-toggle");
-  matcher = new NoteMatcher(osmd, { octaveStrict: octaveStrictToggle.checked });
-  matcher.onAdvance = renderExpectedNotes;
-  matcher.onComplete = renderComplete;
-  matcher.onFeedbackChange = applyFeedbackVisuals;
-  matcher.onNotePlayed = trackPlayedNote;
-  matcher.start();
+    await osmd.load(entry.musicXmlText);
+    osmd.render();
 
-  octaveStrictToggle.addEventListener("change", () => {
-    matcher.setOctaveStrict(octaveStrictToggle.checked);
-  });
+    octaveStrictToggle.checked = entry.settings.octaveStrict;
+
+    matcher = new NoteMatcher(osmd, { octaveStrict: entry.settings.octaveStrict });
+    matcher.onAdvance = renderExpectedNotes;
+    matcher.onComplete = renderComplete;
+    matcher.onFeedbackChange = applyFeedbackVisuals;
+    matcher.onNotePlayed = trackPlayedNote;
+    matcher.start(entry.progress.stepIndex || 0);
+  } catch (err) {
+    console.error("Failed to load piece:", err);
+    container.textContent = "Failed to load this piece. The file may be corrupted or not valid MusicXML.";
+  }
 }
 
-loadSample().catch((err) => {
-  console.error("Failed to load sample score:", err);
-  const container = document.getElementById("osmd-container");
-  container.textContent = "Failed to load sample score. See console for details.";
+octaveStrictToggle.addEventListener("change", () => {
+  if (!matcher) return;
+  matcher.setOctaveStrict(octaveStrictToggle.checked);
+  if (currentEntry) {
+    currentEntry.settings.octaveStrict = octaveStrictToggle.checked;
+    saveCurrentEntry();
+  }
+});
+
+document.getElementById("back-to-library").addEventListener("click", showLibraryView);
+
+fileUpload.addEventListener("change", async () => {
+  const file = fileUpload.files[0];
+  if (!file) return;
+
+  uploadError.hidden = true;
+
+  try {
+    const musicXmlText = await readUploadedFile(file);
+    const entry = {
+      id: crypto.randomUUID(),
+      fileName: file.name,
+      musicXmlText,
+      settings: { octaveStrict: true },
+      progress: { stepIndex: 0, completed: false },
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    await putFile(entry);
+    fileUpload.value = "";
+    openPiece(entry.id);
+  } catch (err) {
+    console.error("Failed to read uploaded file:", err);
+    uploadError.textContent = `Couldn't read "${file.name}": ${err.message}`;
+    uploadError.hidden = false;
+    fileUpload.value = "";
+  }
+});
+
+async function initLibrary() {
+  const entries = await getAllFiles();
+  if (entries.length === 0) {
+    const response = await fetch(SAMPLE_FILE_URL);
+    const musicXmlText = await response.text();
+    await putFile({
+      id: crypto.randomUUID(),
+      fileName: SAMPLE_FILE_NAME,
+      musicXmlText,
+      settings: { octaveStrict: true },
+      progress: { stepIndex: 0, completed: false },
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+  }
+  await refreshLibraryList();
+}
+
+initLibrary().catch((err) => {
+  console.error("Failed to initialize library:", err);
+  libraryList.textContent = "Failed to load your library. See console for details.";
 });
 
 function setMidiStatus({ ok, message }) {
