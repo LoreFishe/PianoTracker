@@ -38,6 +38,8 @@ export class NoteMatcher {
     this.onComplete = null;
     // ({ wrong: number[], correctSoFar: {midi,staffId,note}[] }) => void
     this.onFeedbackChange = null;
+    // (midi: number, isCorrect: boolean) => void — fired for every key press
+    this.onNotePlayed = null;
   }
 
   start() {
@@ -52,6 +54,8 @@ export class NoteMatcher {
   }
 
   noteOn(midi) {
+    const isCorrect = this.expected.some((exp) => this._matches(midi, exp.midi));
+    this.onNotePlayed?.(midi, isCorrect);
     this.heldNotes.add(midi);
     this._checkMatch();
   }

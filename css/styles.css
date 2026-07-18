@@ -37,15 +37,51 @@ body {
   color: #1a7f37;
 }
 
-#wrong-note-feedback {
+#played-notes-feed {
   margin-top: 0.6rem;
-  padding: 0.75rem 1.2rem;
-  background: #fdecea;
-  border: 2px solid #e8998e;
+  padding: 0.6rem;
+  min-height: 3rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  overflow-x: auto;
+  background: #fff;
+  border: 1px solid #e2e2e2;
   border-radius: 8px;
-  color: #b3261e;
+}
+
+.note-badge {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 50%;
+  color: #fff;
   font-weight: 700;
-  font-size: 1.05rem;
+  font-size: 0.85rem;
+  font-family: ui-monospace, Menlo, monospace;
+  animation: note-badge-pop 0.2s ease-out;
+}
+
+.note-badge.correct {
+  background: #1a7f37;
+}
+
+.note-badge.incorrect {
+  background: #cc0000;
+}
+
+@keyframes note-badge-pop {
+  from {
+    transform: scale(0.4);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 
 #midi-debug {

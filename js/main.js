@@ -3,6 +3,7 @@ import { NoteMatcher } from "./matching.js";
 
 const SAMPLE_FILE_URL = "samples/sample-grand-staff.musicxml";
 const MAX_LOG_ENTRIES = 100;
+const MAX_BADGES = 24;
 const STAFF_LABELS = { 1: "Right hand", 2: "Left hand" };
 const WRONG_NOTEHEAD_COLOR = "#CC0000";
 const CORRECT_NOTEHEAD_COLOR = "#1A7F37";
@@ -31,14 +32,21 @@ function renderComplete() {
   el.classList.add("complete");
 }
 
-function applyFeedbackVisuals({ wrong, correctSoFar }) {
-  const feedbackEl = document.getElementById("wrong-note-feedback");
-  const isWrong = wrong.length > 0;
+function popNoteBadge(midi, isCorrect) {
+  const feed = document.getElementById("played-notes-feed");
+  const badge = document.createElement("span");
+  badge.className = `note-badge ${isCorrect ? "correct" : "incorrect"}`;
+  badge.textContent = midiNoteToName(midi);
+  feed.appendChild(badge);
 
-  feedbackEl.hidden = !isWrong;
-  if (isWrong) {
-    feedbackEl.textContent = `Wrong note${wrong.length > 1 ? "s" : ""}: ${wrong.map(midiNoteToName).join(", ")}`;
+  while (feed.children.length > MAX_BADGES) {
+    feed.removeChild(feed.firstChild);
   }
+  feed.scrollLeft = feed.scrollWidth;
+}
+
+function applyFeedbackVisuals({ wrong, correctSoFar }) {
+  const isWrong = wrong.length > 0;
 
   // Reset every previously-colored notehead, then re-color: red for the
   // target notes while a wrong note is held, green for expected notes
@@ -87,6 +95,7 @@ async function loadSample() {
   matcher.onAdvance = renderExpectedNotes;
   matcher.onComplete = renderComplete;
   matcher.onFeedbackChange = applyFeedbackVisuals;
+  matcher.onNotePlayed = popNoteBadge;
   matcher.start();
 
   octaveStrictToggle.addEventListener("change", () => {
