@@ -31,6 +31,7 @@ const libraryList = document.getElementById("library-list");
 const fileUpload = document.getElementById("file-upload");
 const uploadError = document.getElementById("upload-error");
 const octaveStrictToggle = document.getElementById("octave-strict-toggle");
+const handModeButtons = Array.from(document.querySelectorAll(".hand-mode-button"));
 
 function showLibraryView() {
   matcher = null;
@@ -46,8 +47,14 @@ function showPracticeView() {
   practiceView.hidden = false;
 }
 
-const DEFAULT_SETTINGS = { octaveStrict: true };
+const DEFAULT_SETTINGS = { octaveStrict: true, handMode: "both" };
 const DEFAULT_PROGRESS = { stepIndex: 0, completed: false };
+
+function setHandModeButtonsActive(mode) {
+  for (const button of handModeButtons) {
+    button.classList.toggle("active", button.dataset.handMode === mode);
+  }
+}
 
 async function getLibraryEntries() {
   const [files, progressRecords] = await Promise.all([getAllFileContents(), getAllProgress()]);
@@ -197,9 +204,11 @@ async function openPiece(id) {
   const [fileContent, progressRecord] = await Promise.all([getFileContent(id), getProgress(id)]);
   if (!fileContent) return;
 
-  const settings = progressRecord?.settings ?? DEFAULT_SETTINGS;
-  const progress = progressRecord?.progress ?? DEFAULT_PROGRESS;
-  currentEntry = { id, fileName: fileContent.fileName, settings: { ...settings }, progress: { ...progress } };
+  // Merge over defaults (not just fall back to them) so settings added after a
+  // file was first saved — like hand mode — still get a sane value.
+  const settings = { ...DEFAULT_SETTINGS, ...progressRecord?.settings };
+  const progress = { ...DEFAULT_PROGRESS, ...progressRecord?.progress };
+  currentEntry = { id, fileName: fileContent.fileName, settings, progress };
 
   showPracticeView();
   document.getElementById("practice-title").textContent = fileContent.fileName;
@@ -223,8 +232,12 @@ async function openPiece(id) {
     osmd.render();
 
     octaveStrictToggle.checked = currentEntry.settings.octaveStrict;
+    setHandModeButtonsActive(currentEntry.settings.handMode);
 
-    matcher = new NoteMatcher(osmd, { octaveStrict: currentEntry.settings.octaveStrict });
+    matcher = new NoteMatcher(osmd, {
+      octaveStrict: currentEntry.settings.octaveStrict,
+      handMode: currentEntry.settings.handMode,
+    });
     matcher.onAdvance = renderExpectedNotes;
     matcher.onComplete = renderComplete;
     matcher.onFeedbackChange = applyFeedbackVisuals;
@@ -244,6 +257,19 @@ octaveStrictToggle.addEventListener("change", () => {
     saveCurrentEntry();
   }
 });
+
+for (const button of handModeButtons) {
+  button.addEventListener("click", () => {
+    if (!matcher) return;
+    const mode = button.dataset.handMode;
+    matcher.setHandMode(mode);
+    setHandModeButtonsActive(mode);
+    if (currentEntry) {
+      currentEntry.settings.handMode = mode;
+      saveCurrentEntry();
+    }
+  });
+}
 
 document.getElementById("back-to-library").addEventListener("click", showLibraryView);
 

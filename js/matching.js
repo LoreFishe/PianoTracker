@@ -56,10 +56,19 @@ export function getNotePixelPosition(osmd, note) {
   }
 }
 
-function expectedNotesAtCursor(osmd) {
+// Standard grand-staff convention: top staff (1) = treble = right hand,
+// bottom staff (2) = bass = left hand.
+function handAllowsStaff(handMode, staffId) {
+  if (handMode === "right") return staffId === 1;
+  if (handMode === "left") return staffId === 2;
+  return true; // 'both'
+}
+
+function expectedNotesAtCursor(osmd, handMode) {
   return osmd.cursor
     .NotesUnderCursor()
     .filter((note) => !note.isRest())
+    .filter((note) => handAllowsStaff(handMode, note.ParentStaffEntry.ParentStaff.Id))
     .map((note) => ({
       midi: midiFromNote(note),
       staffId: note.ParentStaffEntry.ParentStaff.Id,
@@ -70,11 +79,14 @@ function expectedNotesAtCursor(osmd) {
 /** Tracks the OSMD cursor against played MIDI notes, advancing when all
  * expected notes (chords, across both hands) are held down together.
  * Octave strictness is toggleable: when off, any octave of the right
- * pitch class counts as correct. */
+ * pitch class counts as correct. Hand mode ('both'/'right'/'left') excludes
+ * the deselected hand's notes from what's required — positions where only
+ * the deselected hand has a note are skipped automatically, same as rests. */
 export class NoteMatcher {
-  constructor(osmd, { octaveStrict = true } = {}) {
+  constructor(osmd, { octaveStrict = true, handMode = "both" } = {}) {
     this.osmd = osmd;
     this.octaveStrict = octaveStrict;
+    this.handMode = handMode;
     this.heldNotes = new Set();
     // MIDI notes still physically held that satisfied the *previous* cursor
     // position (legato playing carries a finger over into the next chord).
@@ -111,6 +123,13 @@ export class NoteMatcher {
     this._checkMatch();
   }
 
+  /** Re-filters the current position for the new hand mode without moving
+   * the cursor; auto-skips forward if nothing is required here anymore. */
+  setHandMode(mode) {
+    this.handMode = mode;
+    this._updateExpected();
+  }
+
   noteOn(midi) {
     const isCorrect = this.expected.some((exp) => this._matches(midi, exp.midi));
     this.onNotePlayed?.(midi, isCorrect);
@@ -136,7 +155,7 @@ export class NoteMatcher {
       return;
     }
 
-    this.expected = expectedNotesAtCursor(this.osmd);
+    this.expected = expectedNotesAtCursor(this.osmd, this.handMode);
 
     if (this.expected.length === 0) {
       // Rest-only position for both hands: nothing to wait for, skip ahead.

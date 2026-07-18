@@ -143,7 +143,26 @@ point of this structure is that each step is checkable in isolation.
 - **Verify:** user uploads 2-3 of their own real pieces, confirms they render and track
   correctly, reloads the page and confirms library/settings/progress persisted
 
-### Phase 7 — Play-Along Mode
+### Phase 7 — Hand Isolation
+- Practice mode selector: both hands / right hand only / left hand only
+- In a single-hand mode, the deselected hand's notes are not required to advance —
+  positions where only the deselected hand has a note are skipped automatically, the
+  same way rest-only positions already are
+- Persisted per-file alongside octave strictness
+- **Verify:** user selects right-hand-only on a two-hand piece, confirms the cursor
+  advances on right-hand notes alone and never waits on the left hand; same for
+  left-hand-only
+
+### Phase 8 — Section/Range Practice
+- User can select an arbitrary start and end point in the piece by clicking notes
+  directly on the rendered score, then practice just that section on a loop
+- Looping a section does not overwrite the piece's overall saved resume position
+- **Verify:** user selects a section in the middle of a piece, confirms practice is
+  scoped to it (loops back to the section start on completion, doesn't require playing
+  the rest of the piece), and confirms leaving section mode resumes normal full-piece
+  progress
+
+### Phase 9 — Play-Along Mode
 - Tempo/metronome-driven playback that scrolls the score regardless of input
 - Post-hoc accuracy scoring instead of gating advancement
 - **Verify:** user plays through a piece in play-along mode at a set tempo, reviews the
