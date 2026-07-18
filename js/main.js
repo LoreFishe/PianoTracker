@@ -1,12 +1,16 @@
-import { initMidi, midiNoteToName } from "./midi.js";
+// Cache-busting query param on every internal import: GitHub Pages' default
+// cache lifetime, combined with browsers not always revalidating on a plain
+// reload, has repeatedly served stale JS after a deploy in testing. Bump
+// this string (e.g. to today's date) whenever you deploy a real change.
+import { initMidi, midiNoteToName } from "./midi.js?v=20260718-1";
 import {
   NoteMatcher,
   getStaffPositionForNote,
   getNotePixelPosition,
   walkPiece,
   extractPlaybackNotes,
-} from "./matching.js";
-import { Player } from "./playback.js";
+} from "./matching.js?v=20260718-1";
+import { Player } from "./playback.js?v=20260718-1";
 import {
   putFileContent,
   getFileContent,
@@ -16,8 +20,8 @@ import {
   getProgress,
   getAllProgress,
   deleteProgress,
-} from "./db.js";
-import { renderLibraryList, readUploadedFile } from "./library.js";
+} from "./db.js?v=20260718-1";
+import { renderLibraryList, readUploadedFile } from "./library.js?v=20260718-1";
 
 const SAMPLE_FILE_URL = "samples/sample-grand-staff.musicxml";
 const SAMPLE_FILE_NAME = "Sample Grand Staff Exercise.musicxml";
@@ -59,9 +63,11 @@ let preSectionPosition = 0;
 
 // Every note in the piece with its cursor step, staff, and pixel position —
 // built once per piece load. Used for hand/section grey-out and for mapping
-// a click to the nearest note (both section-boundary picking and general
-// click-to-jump navigation during normal practice).
+// a click to the nearest note (general click-to-jump navigation during
+// normal practice; section-boundary picking uses measureZones instead, so
+// clicking near a barline works as well as clicking a specific note).
 let pieceNoteCache = [];
+let measureZones = [];
 
 function showLibraryView() {
   player.stop();
@@ -248,12 +254,50 @@ function buildPieceNoteCache(osmd) {
         note,
         stepIndex,
         staffId: note.ParentStaffEntry.ParentStaff.Id,
+        measureNumber: note.SourceMeasure.MeasureNumber,
         x: pos?.x ?? null,
         y: pos?.y ?? null,
       });
     }
   });
   return cache;
+}
+
+// One zone per measure (first/last step, horizontal center, vertical position),
+// derived from the note cache. Section-boundary clicks snap to whichever
+// measure they're nearest to rather than requiring a pixel-precise note hit —
+// this is what lets clicking near a barline work as well as clicking a note,
+// and incidentally makes it much harder to accidentally select a near-empty
+// section from an imprecise click.
+function buildMeasureZones(cache) {
+  const byMeasure = new Map();
+  for (const entry of cache) {
+    if (entry.x == null || entry.y == null) continue;
+    let zone = byMeasure.get(entry.measureNumber);
+    if (!zone) {
+      zone = { firstStep: entry.stepIndex, lastStep: entry.stepIndex, minX: entry.x, maxX: entry.x, y: entry.y };
+      byMeasure.set(entry.measureNumber, zone);
+    }
+    zone.firstStep = Math.min(zone.firstStep, entry.stepIndex);
+    zone.lastStep = Math.max(zone.lastStep, entry.stepIndex);
+    zone.minX = Math.min(zone.minX, entry.x);
+    zone.maxX = Math.max(zone.maxX, entry.x);
+  }
+  return Array.from(byMeasure.values());
+}
+
+function findNearestMeasureZone(zones, x, y) {
+  let best = null;
+  let bestDist = Infinity;
+  for (const zone of zones) {
+    const centerX = (zone.minX + zone.maxX) / 2;
+    const dist = (centerX - x) ** 2 + (zone.y - y) ** 2;
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = zone;
+    }
+  }
+  return best;
 }
 
 // Greys out notes that are either the deselected hand or outside the active
@@ -315,7 +359,7 @@ function beginSectionSelection() {
   osmdContainer.classList.add("selecting-section");
   selectSectionButton.textContent = "Cancel selection";
   selectSectionButton.classList.add("selecting");
-  setSectionInstructions("Click a note to set the section start.");
+  setSectionInstructions("Click a note or measure to set the section start.");
 }
 
 function cancelSectionSelection() {
@@ -327,6 +371,11 @@ function cancelSectionSelection() {
   setSectionInstructions("");
 }
 
+function measureNumberForStep(step) {
+  const entry = pieceNoteCache.find((e) => e.stepIndex === step);
+  return entry ? entry.measureNumber : null;
+}
+
 function startSectionPractice(startStep, endStep) {
   preSectionPosition = matcher.totalAdvances;
   heldNoteMarkers = new Map();
@@ -336,11 +385,16 @@ function startSectionPractice(startStep, endStep) {
   osmdContainer.classList.remove("selecting-section");
   selectSectionButton.hidden = true;
   exitSectionButton.hidden = false;
-  const noteCount = endStep - startStep + 1;
-  setSectionInstructions(
-    `Practicing this section on a loop (${noteCount} note${noteCount === 1 ? "" : "s"}).` +
-      (noteCount === 1 ? " That's a single note/chord — click Exit and try again if you meant a wider range." : "")
-  );
+
+  const startMeasure = measureNumberForStep(startStep);
+  const endMeasure = measureNumberForStep(endStep);
+  const range =
+    startMeasure != null && endMeasure != null
+      ? startMeasure === endMeasure
+        ? `measure ${startMeasure}`
+        : `measures ${startMeasure}–${endMeasure}`
+      : "selected range";
+  setSectionInstructions(`Practicing ${range} on a loop.`);
 }
 
 function exitSectionPractice() {
@@ -389,10 +443,12 @@ playButton.addEventListener("click", () => {
   updatePlayButtonLabel();
 });
 
-// Click-to-navigate: while picking a section, sets its start/end. Otherwise,
-// during normal full-piece practice, jumps the cursor straight to whatever
-// note was clicked. Disabled while a section loop is actively running —
-// exit it first (no obvious "still respect the loop" behavior for a click).
+// Click-to-navigate: while picking a section, sets its start/end (snapping
+// to the nearest whole measure, so clicking near a barline works as well as
+// clicking directly on a note). Otherwise, during normal full-piece
+// practice, jumps the cursor straight to whatever note was clicked. Disabled
+// while a section loop is actively running — exit it first (no obvious
+// "still respect the loop" behavior for a click).
 osmdContainer.addEventListener("click", (event) => {
   if (!matcher) return;
   const svg = osmdContainer.querySelector("svg");
@@ -400,24 +456,28 @@ osmdContainer.addEventListener("click", (event) => {
 
   const pt = screenToSvgPoint(svg, event.clientX, event.clientY);
   if (!pt) return;
-  const stepIndex = findNearestStep(pieceNoteCache, pt.x, pt.y);
-  if (stepIndex == null) return;
 
   if (sectionSelectionState === "awaiting-start") {
-    sectionStartStep = stepIndex;
+    const zone = findNearestMeasureZone(measureZones, pt.x, pt.y);
+    if (!zone) return;
+    sectionStartStep = zone.firstStep;
     sectionSelectionState = "awaiting-end";
-    setSectionInstructions("Click a note to set the section end.");
+    setSectionInstructions("Click a measure to set the section end.");
     return;
   }
   if (sectionSelectionState === "awaiting-end") {
-    const start = Math.min(sectionStartStep, stepIndex);
-    const end = Math.max(sectionStartStep, stepIndex);
+    const zone = findNearestMeasureZone(measureZones, pt.x, pt.y);
+    if (!zone) return;
+    const start = Math.min(sectionStartStep, zone.firstStep);
+    const end = Math.max(sectionStartStep, zone.lastStep);
     sectionSelectionState = null;
     startSectionPractice(start, end);
     return;
   }
   if (matcher.sectionEnd != null) return;
 
+  const stepIndex = findNearestStep(pieceNoteCache, pt.x, pt.y);
+  if (stepIndex == null) return;
   heldNoteMarkers = new Map();
   matcher.start(stepIndex);
 });
@@ -459,6 +519,7 @@ async function openPiece(id) {
     await osmd.load(fileContent.musicXmlText);
     osmd.render();
     pieceNoteCache = buildPieceNoteCache(osmd);
+    measureZones = buildMeasureZones(pieceNoteCache);
 
     octaveStrictToggle.checked = currentEntry.settings.octaveStrict;
     setHandModeButtonsActive(currentEntry.settings.handMode);
