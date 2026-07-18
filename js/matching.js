@@ -28,6 +28,11 @@ export class NoteMatcher {
     this.osmd = osmd;
     this.octaveStrict = octaveStrict;
     this.heldNotes = new Set();
+    // MIDI notes still physically held that satisfied the *previous* cursor
+    // position (legato playing carries a finger over into the next chord).
+    // Excluded from wrong-note detection until released, so advancing the
+    // cursor doesn't retroactively flag a note that was just played correctly.
+    this.graceNotes = new Set();
     this.expected = [];
     this.onAdvance = null;
     this.onComplete = null;
@@ -52,6 +57,7 @@ export class NoteMatcher {
 
   noteOff(midi) {
     this.heldNotes.delete(midi);
+    this.graceNotes.delete(midi);
     this._recomputeWrongNotes();
   }
 
@@ -84,6 +90,7 @@ export class NoteMatcher {
     const held = Array.from(this.heldNotes);
     const allHeld = this.expected.every((exp) => held.some((h) => this._matches(h, exp.midi)));
     if (allHeld) {
+      this.graceNotes = new Set(this.heldNotes);
       this.osmd.cursor.next();
       this._updateExpected();
     } else {
@@ -98,7 +105,7 @@ export class NoteMatcher {
       return;
     }
     const wrong = Array.from(this.heldNotes).filter(
-      (h) => !this.expected.some((exp) => this._matches(h, exp.midi))
+      (h) => !this.graceNotes.has(h) && !this.expected.some((exp) => this._matches(h, exp.midi))
     );
     this.onWrongNotesChange(wrong);
   }
