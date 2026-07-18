@@ -18,7 +18,9 @@ const MAX_LOG_ENTRIES = 100;
 const STAFF_LABELS = { 1: "Right hand", 2: "Left hand" };
 const WRONG_NOTEHEAD_COLOR = "#CC0000";
 const CORRECT_NOTEHEAD_COLOR = "#1A7F37";
+const INACTIVE_HAND_COLOR = "#BBBBBB";
 const SVG_NS = "http://www.w3.org/2000/svg";
+const MAX_PIECE_WALK_STEPS = 50_000; // safety cap against a runaway loop on a malformed file
 
 let matcher = null;
 let osmdInstance = null;
@@ -177,27 +179,74 @@ function redrawPlayedNoteMarkers() {
   }
 }
 
-function redrawTargetNoteMarkers(wrong, correctSoFar) {
+// Target notes only ever highlight green (notes of the current chord you've
+// already correctly held). They never turn red on a wrong note — that would
+// make it look like the target itself was wrong, when it's actually whatever
+// you just played that's wrong. That's what the played-note marker is for.
+function redrawTargetNoteMarkers(correctSoFar) {
   const svg = document.querySelector("#osmd-container svg");
   if (!svg) return;
 
   svg.querySelectorAll(".target-note-marker").forEach((el) => el.remove());
   if (!matcher) return;
 
-  const isWrong = wrong.length > 0;
-  const entries = isWrong ? matcher.expected : correctSoFar;
-  const color = isWrong ? WRONG_NOTEHEAD_COLOR : CORRECT_NOTEHEAD_COLOR;
-
-  for (const entry of entries) {
+  for (const entry of correctSoFar) {
     const pos = getNotePixelPosition(osmdInstance, entry.note);
     if (!pos) continue;
-    svg.appendChild(makeMarker("target-note-marker", pos.x, pos.y, { filled: false, color }));
+    svg.appendChild(makeMarker("target-note-marker", pos.x, pos.y, { filled: false, color: CORRECT_NOTEHEAD_COLOR }));
   }
 }
 
-function applyFeedbackVisuals({ wrong, correctSoFar }) {
-  redrawTargetNoteMarkers(wrong, correctSoFar);
+function applyFeedbackVisuals({ correctSoFar }) {
+  redrawTargetNoteMarkers(correctSoFar);
   redrawPlayedNoteMarkers();
+}
+
+// Notes split by staff, cached once per piece load so switching hand mode
+// doesn't have to re-walk the whole piece via the cursor every time (which,
+// combined with the followCursor scroll checks on every cursor.next() call,
+// made hand-mode switching take seconds on a large real piece).
+let rightHandNotes = [];
+let leftHandNotes = [];
+
+function buildHandNoteCache(osmd) {
+  rightHandNotes = [];
+  leftHandNotes = [];
+
+  osmd.cursor.hide(); // avoid per-step scroll/visual-update overhead while walking
+  osmd.cursor.reset();
+  let steps = 0;
+  while (!osmd.cursor.iterator.EndReached && steps < MAX_PIECE_WALK_STEPS) {
+    for (const note of osmd.cursor.NotesUnderCursor()) {
+      if (note.isRest()) continue;
+      const staffId = note.ParentStaffEntry.ParentStaff.Id;
+      if (staffId === 1) rightHandNotes.push(note);
+      else if (staffId === 2) leftHandNotes.push(note);
+    }
+    osmd.cursor.next();
+    steps++;
+  }
+  osmd.cursor.reset();
+}
+
+// Colors the deselected hand's notes grey using the cache above — no walking,
+// so the only real cost left is the render() call itself, which is still
+// fine here since hand-mode switching is a rare, deliberate action, unlike
+// the per-keystroke feedback path.
+function applyHandModeGreyOut(handMode) {
+  if (!osmdInstance || !matcher) return;
+  for (const note of rightHandNotes) {
+    note.NoteheadColor = handMode === "left" ? INACTIVE_HAND_COLOR : undefined;
+  }
+  for (const note of leftHandNotes) {
+    note.NoteheadColor = handMode === "right" ? INACTIVE_HAND_COLOR : undefined;
+  }
+  osmdInstance.render();
+  osmdInstance.cursor.show();
+
+  // render() just wiped our SVG overlay markers; redraw them for the current
+  // position (re-applying the same hand mode is a cheap way to force that).
+  matcher.setHandMode(matcher.handMode);
 }
 
 async function openPiece(id) {
@@ -230,6 +279,7 @@ async function openPiece(id) {
 
     await osmd.load(fileContent.musicXmlText);
     osmd.render();
+    buildHandNoteCache(osmd);
 
     octaveStrictToggle.checked = currentEntry.settings.octaveStrict;
     setHandModeButtonsActive(currentEntry.settings.handMode);
@@ -243,6 +293,10 @@ async function openPiece(id) {
     matcher.onFeedbackChange = applyFeedbackVisuals;
     matcher.onNotePlayed = trackPlayedNote;
     matcher.start(currentEntry.progress.stepIndex || 0);
+    // Skip the extra render for the common default case (nothing to grey out).
+    if (currentEntry.settings.handMode !== "both") {
+      applyHandModeGreyOut(currentEntry.settings.handMode);
+    }
   } catch (err) {
     console.error("Failed to load piece:", err);
     container.textContent = "Failed to load this piece. The file may be corrupted or not valid MusicXML.";
@@ -264,6 +318,7 @@ for (const button of handModeButtons) {
     const mode = button.dataset.handMode;
     matcher.setHandMode(mode);
     setHandModeButtonsActive(mode);
+    applyHandModeGreyOut(mode);
     if (currentEntry) {
       currentEntry.settings.handMode = mode;
       saveCurrentEntry();
