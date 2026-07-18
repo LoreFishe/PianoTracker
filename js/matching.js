@@ -103,6 +103,12 @@ export class NoteMatcher {
     // Total raw cursor.next() calls since reset (both from real matches and
     // internal rest-skipping) — a stable position marker for resuming later.
     this.totalAdvances = 0;
+    // When set, practice loops within [sectionStart, sectionEnd] (both are
+    // raw step indices, inclusive) instead of running to the end of the piece.
+    this.sectionStart = null;
+    this.sectionEnd = null;
+    // () => void — fired each time a section loops back to its start
+    this.onSectionLoop = null;
   }
 
   /** Starts the cursor at the beginning, then fast-forwards `resumeSteps`
@@ -121,6 +127,22 @@ export class NoteMatcher {
   setOctaveStrict(strict) {
     this.octaveStrict = strict;
     this._checkMatch();
+  }
+
+  /** Scopes practice to [startStep, endStep] (inclusive, raw step indices)
+   * and jumps to startStep. Reaching the end of the section loops back to
+   * the start instead of continuing into the rest of the piece. */
+  startSection(startStep, endStep) {
+    this.sectionStart = startStep;
+    this.sectionEnd = endStep;
+    this.start(startStep);
+  }
+
+  /** Returns to normal full-piece practice; does not move the cursor —
+   * callers decide where practice should resume (e.g. via start()). */
+  stopSection() {
+    this.sectionStart = null;
+    this.sectionEnd = null;
   }
 
   /** Re-filters the current position for the new hand mode without moving
@@ -177,10 +199,27 @@ export class NoteMatcher {
       this.graceNotes = new Set(this.heldNotes);
       this.osmd.cursor.next();
       this.totalAdvances++;
-      this._updateExpected();
+      if (this.sectionEnd != null && this.totalAdvances > this.sectionEnd) {
+        this._loopSection();
+      } else {
+        this._updateExpected();
+      }
     } else {
       this._recomputeFeedback();
     }
+  }
+
+  /** Just finished the last note/chord of the active section: jump back to
+   * its start rather than continuing into the rest of the piece. */
+  _loopSection() {
+    this.osmd.cursor.reset();
+    this.totalAdvances = 0;
+    for (let i = 0; i < this.sectionStart; i++) {
+      this.osmd.cursor.next();
+      this.totalAdvances++;
+    }
+    this.onSectionLoop?.();
+    this._updateExpected();
   }
 
   _recomputeFeedback() {

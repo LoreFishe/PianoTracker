@@ -34,6 +34,19 @@ const fileUpload = document.getElementById("file-upload");
 const uploadError = document.getElementById("upload-error");
 const octaveStrictToggle = document.getElementById("octave-strict-toggle");
 const handModeButtons = Array.from(document.querySelectorAll(".hand-mode-button"));
+const selectSectionButton = document.getElementById("select-section-button");
+const exitSectionButton = document.getElementById("exit-section-button");
+const sectionInstructions = document.getElementById("section-instructions");
+const osmdContainer = document.getElementById("osmd-container");
+
+// Section-practice click-to-select state. `sectionSelectionState` is null
+// (idle), "awaiting-start", or "awaiting-end". `preSectionPosition` is the
+// in-session step to return to on exit — separate from the persisted
+// progress, since dipping into section practice shouldn't affect it.
+let sectionSelectionState = null;
+let sectionStartStep = null;
+let stepPositionCache = [];
+let preSectionPosition = 0;
 
 function showLibraryView() {
   matcher = null;
@@ -113,7 +126,9 @@ function renderExpectedNotes(expected) {
   el.textContent = `Waiting for — ${parts.join("   |   ")}`;
   el.classList.remove("complete");
 
-  if (currentEntry) {
+  // Section practice loops independently of the piece's overall saved
+  // position — don't let a loop overwrite where the user last resumed to.
+  if (currentEntry && matcher.sectionEnd == null) {
     currentEntry.progress.stepIndex = matcher.totalAdvances;
     currentEntry.progress.completed = false;
     saveCurrentEntry();
@@ -125,7 +140,7 @@ function renderComplete() {
   el.textContent = "Piece complete!";
   el.classList.add("complete");
 
-  if (currentEntry) {
+  if (currentEntry && matcher.sectionEnd == null) {
     currentEntry.progress.stepIndex = matcher.totalAdvances;
     currentEntry.progress.completed = true;
     saveCurrentEntry();
@@ -249,6 +264,138 @@ function applyHandModeGreyOut(handMode) {
   matcher.setHandMode(matcher.handMode);
 }
 
+// Fresh per-selection walk of every note's pixel position, used only to map
+// a click to the nearest cursor step. Rebuilt each time selection starts
+// (rather than cached long-term) since a resize/re-render could otherwise
+// leave stale positions behind — selection is rare enough that re-walking
+// the piece each time is cheap in practice terms.
+function buildStepPositionCache(osmd) {
+  const cache = [];
+  const resumeSteps = matcher.totalAdvances;
+
+  osmd.cursor.hide();
+  osmd.cursor.reset();
+  let steps = 0;
+  while (!osmd.cursor.iterator.EndReached && steps < MAX_PIECE_WALK_STEPS) {
+    for (const note of osmd.cursor.NotesUnderCursor()) {
+      if (note.isRest()) continue;
+      const pos = getNotePixelPosition(osmd, note);
+      if (pos) cache.push({ stepIndex: steps, x: pos.x, y: pos.y });
+    }
+    osmd.cursor.next();
+    steps++;
+  }
+
+  osmd.cursor.reset();
+  for (let i = 0; i < resumeSteps; i++) osmd.cursor.next();
+  osmd.cursor.show();
+  return cache;
+}
+
+function findNearestStep(cache, x, y) {
+  let bestStep = null;
+  let bestDist = Infinity;
+  for (const entry of cache) {
+    const dist = (entry.x - x) ** 2 + (entry.y - y) ** 2;
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestStep = entry.stepIndex;
+    }
+  }
+  return bestStep;
+}
+
+function screenToSvgPoint(svg, clientX, clientY) {
+  const ctm = svg.getScreenCTM();
+  if (!ctm) return null;
+  const pt = svg.createSVGPoint();
+  pt.x = clientX;
+  pt.y = clientY;
+  const svgPt = pt.matrixTransform(ctm.inverse());
+  return { x: svgPt.x, y: svgPt.y };
+}
+
+function setSectionInstructions(text) {
+  sectionInstructions.textContent = text;
+  sectionInstructions.hidden = !text;
+}
+
+function beginSectionSelection() {
+  if (!matcher || matcher.sectionEnd != null) return;
+  sectionSelectionState = "awaiting-start";
+  sectionStartStep = null;
+  stepPositionCache = buildStepPositionCache(osmdInstance);
+  osmdContainer.classList.add("selecting-section");
+  selectSectionButton.textContent = "Cancel selection";
+  selectSectionButton.classList.add("selecting");
+  setSectionInstructions("Click a note to set the section start.");
+}
+
+function cancelSectionSelection() {
+  sectionSelectionState = null;
+  sectionStartStep = null;
+  stepPositionCache = [];
+  osmdContainer.classList.remove("selecting-section");
+  selectSectionButton.textContent = "Practice a section…";
+  selectSectionButton.classList.remove("selecting");
+  setSectionInstructions("");
+}
+
+function startSectionPractice(startStep, endStep) {
+  preSectionPosition = matcher.totalAdvances;
+  heldNoteMarkers = new Map();
+  matcher.startSection(startStep, endStep);
+
+  osmdContainer.classList.remove("selecting-section");
+  selectSectionButton.hidden = true;
+  exitSectionButton.hidden = false;
+  setSectionInstructions("Practicing this section on a loop.");
+}
+
+function exitSectionPractice() {
+  if (!matcher) return;
+  matcher.stopSection();
+  heldNoteMarkers = new Map();
+  matcher.start(preSectionPosition);
+
+  selectSectionButton.hidden = false;
+  exitSectionButton.hidden = true;
+  setSectionInstructions("");
+}
+
+selectSectionButton.addEventListener("click", () => {
+  if (sectionSelectionState) {
+    cancelSectionSelection();
+  } else {
+    beginSectionSelection();
+  }
+});
+
+exitSectionButton.addEventListener("click", exitSectionPractice);
+
+osmdContainer.addEventListener("click", (event) => {
+  if (!sectionSelectionState) return;
+  const svg = osmdContainer.querySelector("svg");
+  if (!svg) return;
+
+  const pt = screenToSvgPoint(svg, event.clientX, event.clientY);
+  if (!pt) return;
+  const stepIndex = findNearestStep(stepPositionCache, pt.x, pt.y);
+  if (stepIndex == null) return;
+
+  if (sectionSelectionState === "awaiting-start") {
+    sectionStartStep = stepIndex;
+    sectionSelectionState = "awaiting-end";
+    setSectionInstructions("Click a note to set the section end.");
+  } else if (sectionSelectionState === "awaiting-end") {
+    const start = Math.min(sectionStartStep, stepIndex);
+    const end = Math.max(sectionStartStep, stepIndex);
+    sectionSelectionState = null;
+    stepPositionCache = [];
+    startSectionPractice(start, end);
+  }
+});
+
 async function openPiece(id) {
   const [fileContent, progressRecord] = await Promise.all([getFileContent(id), getProgress(id)]);
   if (!fileContent) return;
@@ -267,6 +414,10 @@ async function openPiece(id) {
   document.getElementById("expected-notes").textContent = "Loading score…";
 
   heldNoteMarkers = new Map();
+  cancelSectionSelection();
+  preSectionPosition = 0;
+  selectSectionButton.hidden = false;
+  exitSectionButton.hidden = true;
 
   try {
     const osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay(container, {
@@ -292,7 +443,9 @@ async function openPiece(id) {
     matcher.onComplete = renderComplete;
     matcher.onFeedbackChange = applyFeedbackVisuals;
     matcher.onNotePlayed = trackPlayedNote;
-    matcher.start(currentEntry.progress.stepIndex || 0);
+    // Always start at the beginning when a piece is opened — saved progress
+    // is still tracked (shown in the library) but isn't used to auto-resume.
+    matcher.start(0);
     // Skip the extra render for the common default case (nothing to grey out).
     if (currentEntry.settings.handMode !== "both") {
       applyHandModeGreyOut(currentEntry.settings.handMode);

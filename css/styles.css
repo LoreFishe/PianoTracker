@@ -51,6 +51,53 @@ body {
   color: #fff;
 }
 
+#select-section-button,
+#exit-section-button {
+  padding: 0.4rem 0.9rem;
+  border-radius: 8px;
+  border: 1px solid #ccc;
+  background: #fff;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  color: #444;
+}
+
+#select-section-button:hover,
+#exit-section-button:hover {
+  background: #f0f0f0;
+}
+
+#select-section-button.selecting {
+  background: #3b82f6;
+  color: #fff;
+  border-color: #3b82f6;
+}
+
+#exit-section-button {
+  background: #fff7e6;
+  border-color: #f0c674;
+  color: #8a5a00;
+}
+
+#exit-section-button:hover {
+  background: #fdecc8;
+}
+
+#section-instructions {
+  margin: 0 0 1rem;
+  padding: 0.7rem 1.2rem;
+  background: #fff7e6;
+  border: 2px solid #f0c674;
+  border-radius: 8px;
+  color: #8a5a00;
+  font-weight: 600;
+}
+
+#osmd-container.selecting-section svg {
+  cursor: crosshair;
+}
+
 #library-controls {
   margin-bottom: 1rem;
   display: flex;
