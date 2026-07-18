@@ -10,3 +10,46 @@ body {
   margin: 0 auto;
   padding: 2rem;
 }
+
+#midi-debug {
+  margin-top: 2rem;
+  padding: 1rem;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  background: #fff;
+}
+
+#midi-status {
+  font-weight: 600;
+}
+
+#midi-status.ok {
+  color: #1a7f37;
+}
+
+#midi-status.error {
+  color: #b3261e;
+}
+
+#midi-log {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 0.85rem;
+}
+
+#midi-log li {
+  padding: 2px 0;
+  border-bottom: 1px solid #eee;
+}
+
+#midi-log li.note-on {
+  color: #1a7f37;
+}
+
+#midi-log li.note-off {
+  color: #666;
+}
