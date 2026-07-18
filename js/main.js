@@ -3,7 +3,6 @@ import { NoteMatcher, getStaffPositionForNote } from "./matching.js";
 
 const SAMPLE_FILE_URL = "samples/sample-grand-staff.musicxml";
 const MAX_LOG_ENTRIES = 100;
-const MAX_BADGES = 24;
 const STAFF_LABELS = { 1: "Right hand", 2: "Left hand" };
 const WRONG_NOTEHEAD_COLOR = "#CC0000";
 const CORRECT_NOTEHEAD_COLOR = "#1A7F37";
@@ -33,18 +32,7 @@ function renderComplete() {
   el.classList.add("complete");
 }
 
-function popNoteBadge(midi, isCorrect) {
-  const feed = document.getElementById("played-notes-feed");
-  const badge = document.createElement("span");
-  badge.className = `note-badge ${isCorrect ? "correct" : "incorrect"}`;
-  badge.textContent = midiNoteToName(midi);
-  feed.appendChild(badge);
-
-  while (feed.children.length > MAX_BADGES) {
-    feed.removeChild(feed.firstChild);
-  }
-  feed.scrollLeft = feed.scrollWidth;
-
+function trackPlayedNote(midi, isCorrect) {
   heldNoteMarkers.set(midi, isCorrect);
 }
 
@@ -124,7 +112,7 @@ async function loadSample() {
   matcher.onAdvance = renderExpectedNotes;
   matcher.onComplete = renderComplete;
   matcher.onFeedbackChange = applyFeedbackVisuals;
-  matcher.onNotePlayed = popNoteBadge;
+  matcher.onNotePlayed = trackPlayedNote;
   matcher.start();
 
   octaveStrictToggle.addEventListener("change", () => {
