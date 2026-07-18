@@ -1,6 +1,6 @@
-function midiFromNote(note) {
-  // OSMD's Note.halfTone uses a different zero point than MIDI note numbers;
-  // empirically, MIDI note number = halfTone + 12 (verified against known XML octaves).
+// OSMD's Note.halfTone uses a different zero point than MIDI note numbers;
+// empirically, MIDI note number = halfTone + 12 (verified against known XML octaves).
+export function midiFromNote(note) {
   return note.halfTone + 12;
 }
 
@@ -54,6 +54,59 @@ export function getNotePixelPosition(osmd, note) {
   } catch {
     return null;
   }
+}
+
+const MAX_PIECE_WALK_STEPS = 50_000; // safety cap against a runaway loop on a malformed file
+
+/** Walks every cursor step in the piece once, calling `onStep(stepIndex, notes)`
+ * for each (rests excluded from `notes`). Restores the cursor to wherever it
+ * started (or `resumeSteps` if given) when done — this is a read-only survey,
+ * not a navigation. Hides the cursor during the walk to avoid per-step
+ * scroll/visual-update overhead (this compounds badly in a tight loop on a
+ * large piece otherwise). */
+export function walkPiece(osmd, onStep, resumeSteps = 0) {
+  osmd.cursor.hide();
+  osmd.cursor.reset();
+  let steps = 0;
+  while (!osmd.cursor.iterator.EndReached && steps < MAX_PIECE_WALK_STEPS) {
+    const notes = osmd.cursor.NotesUnderCursor().filter((note) => !note.isRest());
+    onStep(steps, notes);
+    osmd.cursor.next();
+    steps++;
+  }
+  osmd.cursor.reset();
+  for (let i = 0; i < resumeSteps; i++) osmd.cursor.next();
+  osmd.cursor.show();
+}
+
+/** Extracts { midi, startSeconds, durationSeconds } for every note in
+ * [startStep, endStep] (endStep null = to the end of the piece), for audio
+ * preview playback. Timestamps are in whole-note units in MusicXML/OSMD;
+ * secondsPerWholeNote converts using the piece's tempo (beats = quarter notes). */
+export function extractPlaybackNotes(osmd, startStep, endStep, bpm, resumeSteps = 0) {
+  const secondsPerWholeNote = 240 / bpm;
+  const notes = [];
+  let baseTimestamp = null;
+
+  walkPiece(
+    osmd,
+    (stepIndex, stepNotes) => {
+      if (stepIndex < startStep) return;
+      if (endStep != null && stepIndex > endStep) return;
+      for (const note of stepNotes) {
+        const timestamp = note.getAbsoluteTimestamp().RealValue;
+        if (baseTimestamp == null || timestamp < baseTimestamp) baseTimestamp = timestamp;
+        notes.push({ midi: midiFromNote(note), timestamp, length: note.Length.RealValue });
+      }
+    },
+    resumeSteps
+  );
+
+  return notes.map((n) => ({
+    midi: n.midi,
+    startSeconds: (n.timestamp - baseTimestamp) * secondsPerWholeNote,
+    durationSeconds: n.length * secondsPerWholeNote,
+  }));
 }
 
 // Standard grand-staff convention: top staff (1) = treble = right hand,

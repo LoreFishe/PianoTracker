@@ -52,7 +52,8 @@ body {
 }
 
 #select-section-button,
-#exit-section-button {
+#exit-section-button,
+#play-button {
   padding: 0.4rem 0.9rem;
   border-radius: 8px;
   border: 1px solid #ccc;
@@ -64,8 +65,14 @@ body {
 }
 
 #select-section-button:hover,
-#exit-section-button:hover {
+#exit-section-button:hover,
+#play-button:hover {
   background: #f0f0f0;
+}
+
+#play-button {
+  border-color: #3b82f6;
+  color: #3b82f6;
 }
 
 #select-section-button.selecting {

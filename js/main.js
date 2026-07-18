@@ -1,5 +1,12 @@
 import { initMidi, midiNoteToName } from "./midi.js";
-import { NoteMatcher, getStaffPositionForNote, getNotePixelPosition } from "./matching.js";
+import {
+  NoteMatcher,
+  getStaffPositionForNote,
+  getNotePixelPosition,
+  walkPiece,
+  extractPlaybackNotes,
+} from "./matching.js";
+import { Player } from "./playback.js";
 import {
   putFileContent,
   getFileContent,
@@ -20,7 +27,7 @@ const WRONG_NOTEHEAD_COLOR = "#CC0000";
 const CORRECT_NOTEHEAD_COLOR = "#1A7F37";
 const INACTIVE_HAND_COLOR = "#BBBBBB";
 const SVG_NS = "http://www.w3.org/2000/svg";
-const MAX_PIECE_WALK_STEPS = 50_000; // safety cap against a runaway loop on a malformed file
+const DEFAULT_BPM = 100;
 
 let matcher = null;
 let osmdInstance = null;
@@ -38,6 +45,9 @@ const selectSectionButton = document.getElementById("select-section-button");
 const exitSectionButton = document.getElementById("exit-section-button");
 const sectionInstructions = document.getElementById("section-instructions");
 const osmdContainer = document.getElementById("osmd-container");
+const playButton = document.getElementById("play-button");
+
+const player = new Player();
 
 // Section-practice click-to-select state. `sectionSelectionState` is null
 // (idle), "awaiting-start", or "awaiting-end". `preSectionPosition` is the
@@ -45,10 +55,17 @@ const osmdContainer = document.getElementById("osmd-container");
 // progress, since dipping into section practice shouldn't affect it.
 let sectionSelectionState = null;
 let sectionStartStep = null;
-let stepPositionCache = [];
 let preSectionPosition = 0;
 
+// Every note in the piece with its cursor step, staff, and pixel position —
+// built once per piece load. Used for hand/section grey-out and for mapping
+// a click to the nearest note (both section-boundary picking and general
+// click-to-jump navigation during normal practice).
+let pieceNoteCache = [];
+
 function showLibraryView() {
+  player.stop();
+  updatePlayButtonLabel();
   matcher = null;
   osmdInstance = null;
   currentEntry = null;
@@ -217,44 +234,45 @@ function applyFeedbackVisuals({ correctSoFar }) {
   redrawPlayedNoteMarkers();
 }
 
-// Notes split by staff, cached once per piece load so switching hand mode
-// doesn't have to re-walk the whole piece via the cursor every time (which,
-// combined with the followCursor scroll checks on every cursor.next() call,
-// made hand-mode switching take seconds on a large real piece).
-let rightHandNotes = [];
-let leftHandNotes = [];
-
-function buildHandNoteCache(osmd) {
-  rightHandNotes = [];
-  leftHandNotes = [];
-
-  osmd.cursor.hide(); // avoid per-step scroll/visual-update overhead while walking
-  osmd.cursor.reset();
-  let steps = 0;
-  while (!osmd.cursor.iterator.EndReached && steps < MAX_PIECE_WALK_STEPS) {
-    for (const note of osmd.cursor.NotesUnderCursor()) {
-      if (note.isRest()) continue;
-      const staffId = note.ParentStaffEntry.ParentStaff.Id;
-      if (staffId === 1) rightHandNotes.push(note);
-      else if (staffId === 2) leftHandNotes.push(note);
-    }
-    osmd.cursor.next();
-    steps++;
-  }
-  osmd.cursor.reset();
+// Built once per piece load (see openPiece) rather than re-walked on every
+// hand-mode/section change — walking the piece via the cursor is cheap on
+// its own, but combined with followCursor's per-step scroll checks it added
+// up to seconds on a large real piece when done repeatedly.
+function buildPieceNoteCache(osmd) {
+  const cache = [];
+  walkPiece(
+    osmd,
+    (stepIndex, notes) => {
+      for (const note of notes) {
+        const pos = getNotePixelPosition(osmd, note);
+        cache.push({
+          note,
+          stepIndex,
+          staffId: note.ParentStaffEntry.ParentStaff.Id,
+          x: pos?.x ?? null,
+          y: pos?.y ?? null,
+        });
+      }
+    },
+    matcher ? matcher.totalAdvances : 0
+  );
+  return cache;
 }
 
-// Colors the deselected hand's notes grey using the cache above — no walking,
-// so the only real cost left is the render() call itself, which is still
-// fine here since hand-mode switching is a rare, deliberate action, unlike
-// the per-keystroke feedback path.
-function applyHandModeGreyOut(handMode) {
+// Greys out notes that are either the deselected hand or outside the active
+// practice section (both conditions checked together, since either one can
+// apply at once). No walking — just recolors from the cache — so the only
+// real cost is the render() call itself, which is fine here since this only
+// runs on a deliberate hand-mode/section change, never per keystroke.
+function applyGreyOut() {
   if (!osmdInstance || !matcher) return;
-  for (const note of rightHandNotes) {
-    note.NoteheadColor = handMode === "left" ? INACTIVE_HAND_COLOR : undefined;
-  }
-  for (const note of leftHandNotes) {
-    note.NoteheadColor = handMode === "right" ? INACTIVE_HAND_COLOR : undefined;
+  const { handMode, sectionStart, sectionEnd } = matcher;
+
+  for (const entry of pieceNoteCache) {
+    const handOk =
+      handMode === "both" || (handMode === "right" && entry.staffId === 1) || (handMode === "left" && entry.staffId === 2);
+    const sectionOk = sectionStart == null || (entry.stepIndex >= sectionStart && entry.stepIndex <= sectionEnd);
+    entry.note.NoteheadColor = handOk && sectionOk ? undefined : INACTIVE_HAND_COLOR;
   }
   osmdInstance.render();
   osmdInstance.cursor.show();
@@ -264,38 +282,11 @@ function applyHandModeGreyOut(handMode) {
   matcher.setHandMode(matcher.handMode);
 }
 
-// Fresh per-selection walk of every note's pixel position, used only to map
-// a click to the nearest cursor step. Rebuilt each time selection starts
-// (rather than cached long-term) since a resize/re-render could otherwise
-// leave stale positions behind — selection is rare enough that re-walking
-// the piece each time is cheap in practice terms.
-function buildStepPositionCache(osmd) {
-  const cache = [];
-  const resumeSteps = matcher.totalAdvances;
-
-  osmd.cursor.hide();
-  osmd.cursor.reset();
-  let steps = 0;
-  while (!osmd.cursor.iterator.EndReached && steps < MAX_PIECE_WALK_STEPS) {
-    for (const note of osmd.cursor.NotesUnderCursor()) {
-      if (note.isRest()) continue;
-      const pos = getNotePixelPosition(osmd, note);
-      if (pos) cache.push({ stepIndex: steps, x: pos.x, y: pos.y });
-    }
-    osmd.cursor.next();
-    steps++;
-  }
-
-  osmd.cursor.reset();
-  for (let i = 0; i < resumeSteps; i++) osmd.cursor.next();
-  osmd.cursor.show();
-  return cache;
-}
-
 function findNearestStep(cache, x, y) {
   let bestStep = null;
   let bestDist = Infinity;
   for (const entry of cache) {
+    if (entry.x == null || entry.y == null) continue;
     const dist = (entry.x - x) ** 2 + (entry.y - y) ** 2;
     if (dist < bestDist) {
       bestDist = dist;
@@ -324,7 +315,6 @@ function beginSectionSelection() {
   if (!matcher || matcher.sectionEnd != null) return;
   sectionSelectionState = "awaiting-start";
   sectionStartStep = null;
-  stepPositionCache = buildStepPositionCache(osmdInstance);
   osmdContainer.classList.add("selecting-section");
   selectSectionButton.textContent = "Cancel selection";
   selectSectionButton.classList.add("selecting");
@@ -334,7 +324,6 @@ function beginSectionSelection() {
 function cancelSectionSelection() {
   sectionSelectionState = null;
   sectionStartStep = null;
-  stepPositionCache = [];
   osmdContainer.classList.remove("selecting-section");
   selectSectionButton.textContent = "Practice a section…";
   selectSectionButton.classList.remove("selecting");
@@ -345,6 +334,7 @@ function startSectionPractice(startStep, endStep) {
   preSectionPosition = matcher.totalAdvances;
   heldNoteMarkers = new Map();
   matcher.startSection(startStep, endStep);
+  applyGreyOut();
 
   osmdContainer.classList.remove("selecting-section");
   selectSectionButton.hidden = true;
@@ -357,6 +347,7 @@ function exitSectionPractice() {
   matcher.stopSection();
   heldNoteMarkers = new Map();
   matcher.start(preSectionPosition);
+  applyGreyOut(); // un-grey the rest of the piece (unless a single hand is also selected)
 
   selectSectionButton.hidden = false;
   exitSectionButton.hidden = true;
@@ -373,27 +364,61 @@ selectSectionButton.addEventListener("click", () => {
 
 exitSectionButton.addEventListener("click", exitSectionPractice);
 
+function updatePlayButtonLabel() {
+  playButton.textContent = player.isPlaying ? "⏹ Stop" : "▶ Play";
+}
+
+// Previews the current scope (the active section if one is looping,
+// otherwise the whole piece) as audio, so the user can hear how it's meant
+// to sound before playing along. Doesn't move the practice cursor.
+playButton.addEventListener("click", () => {
+  if (!matcher || !osmdInstance) return;
+
+  if (player.isPlaying) {
+    player.stop();
+    updatePlayButtonLabel();
+    return;
+  }
+
+  const startStep = matcher.sectionStart ?? 0;
+  const endStep = matcher.sectionEnd ?? null;
+  const bpm = osmdInstance.Sheet?.DefaultStartTempoInBpm || DEFAULT_BPM;
+  const notes = extractPlaybackNotes(osmdInstance, startStep, endStep, bpm, matcher.totalAdvances);
+  player.play(notes, { onEnd: updatePlayButtonLabel });
+  updatePlayButtonLabel();
+});
+
+// Click-to-navigate: while picking a section, sets its start/end. Otherwise,
+// during normal full-piece practice, jumps the cursor straight to whatever
+// note was clicked. Disabled while a section loop is actively running —
+// exit it first (no obvious "still respect the loop" behavior for a click).
 osmdContainer.addEventListener("click", (event) => {
-  if (!sectionSelectionState) return;
+  if (!matcher) return;
   const svg = osmdContainer.querySelector("svg");
   if (!svg) return;
 
   const pt = screenToSvgPoint(svg, event.clientX, event.clientY);
   if (!pt) return;
-  const stepIndex = findNearestStep(stepPositionCache, pt.x, pt.y);
+  const stepIndex = findNearestStep(pieceNoteCache, pt.x, pt.y);
   if (stepIndex == null) return;
 
   if (sectionSelectionState === "awaiting-start") {
     sectionStartStep = stepIndex;
     sectionSelectionState = "awaiting-end";
     setSectionInstructions("Click a note to set the section end.");
-  } else if (sectionSelectionState === "awaiting-end") {
+    return;
+  }
+  if (sectionSelectionState === "awaiting-end") {
     const start = Math.min(sectionStartStep, stepIndex);
     const end = Math.max(sectionStartStep, stepIndex);
     sectionSelectionState = null;
-    stepPositionCache = [];
     startSectionPractice(start, end);
+    return;
   }
+  if (matcher.sectionEnd != null) return;
+
+  heldNoteMarkers = new Map();
+  matcher.start(stepIndex);
 });
 
 async function openPiece(id) {
@@ -418,6 +443,8 @@ async function openPiece(id) {
   preSectionPosition = 0;
   selectSectionButton.hidden = false;
   exitSectionButton.hidden = true;
+  player.stop();
+  updatePlayButtonLabel();
 
   try {
     const osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay(container, {
@@ -430,7 +457,7 @@ async function openPiece(id) {
 
     await osmd.load(fileContent.musicXmlText);
     osmd.render();
-    buildHandNoteCache(osmd);
+    pieceNoteCache = buildPieceNoteCache(osmd);
 
     octaveStrictToggle.checked = currentEntry.settings.octaveStrict;
     setHandModeButtonsActive(currentEntry.settings.handMode);
@@ -448,7 +475,7 @@ async function openPiece(id) {
     matcher.start(0);
     // Skip the extra render for the common default case (nothing to grey out).
     if (currentEntry.settings.handMode !== "both") {
-      applyHandModeGreyOut(currentEntry.settings.handMode);
+      applyGreyOut();
     }
   } catch (err) {
     console.error("Failed to load piece:", err);
@@ -471,7 +498,7 @@ for (const button of handModeButtons) {
     const mode = button.dataset.handMode;
     matcher.setHandMode(mode);
     setHandModeButtonsActive(mode);
-    applyHandModeGreyOut(mode);
+    applyGreyOut();
     if (currentEntry) {
       currentEntry.settings.handMode = mode;
       saveCurrentEntry();
