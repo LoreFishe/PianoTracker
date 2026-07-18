@@ -1,5 +1,5 @@
 import { initMidi, midiNoteToName } from "./midi.js";
-import { NoteMatcher } from "./matching.js";
+import { NoteMatcher, getStaffPositionForNote } from "./matching.js";
 
 const SAMPLE_FILE_URL = "samples/sample-grand-staff.musicxml";
 const MAX_LOG_ENTRIES = 100;
@@ -11,6 +11,7 @@ const CORRECT_NOTEHEAD_COLOR = "#1A7F37";
 let matcher = null;
 let osmdInstance = null;
 let coloredNotes = []; // Note objects currently painted red or green
+let heldNoteMarkers = new Map(); // midi -> isCorrect, for notes currently held down
 
 function renderExpectedNotes(expected) {
   const el = document.getElementById("expected-notes");
@@ -43,6 +44,33 @@ function popNoteBadge(midi, isCorrect) {
     feed.removeChild(feed.firstChild);
   }
   feed.scrollLeft = feed.scrollWidth;
+
+  heldNoteMarkers.set(midi, isCorrect);
+}
+
+function redrawPlayedNoteMarkers() {
+  const svg = document.querySelector("#osmd-container svg");
+  if (!svg) return;
+
+  svg.querySelectorAll(".played-note-marker").forEach((el) => el.remove());
+  if (!matcher) return;
+
+  for (const [midi, isCorrect] of heldNoteMarkers) {
+    const pos = getStaffPositionForNote(osmdInstance, matcher.expected, midi);
+    if (!pos) continue;
+
+    const marker = document.createElementNS("http://www.w3.org/2000/svg", "ellipse");
+    marker.setAttribute("cx", pos.x);
+    marker.setAttribute("cy", pos.y);
+    marker.setAttribute("rx", "5.5");
+    marker.setAttribute("ry", "4.5");
+    marker.setAttribute("fill", isCorrect ? CORRECT_NOTEHEAD_COLOR : WRONG_NOTEHEAD_COLOR);
+    marker.setAttribute("fill-opacity", "0.7");
+    marker.setAttribute("stroke", "#ffffff");
+    marker.setAttribute("stroke-width", "1");
+    marker.setAttribute("class", "played-note-marker");
+    svg.appendChild(marker);
+  }
 }
 
 function applyFeedbackVisuals({ wrong, correctSoFar }) {
@@ -72,6 +100,7 @@ function applyFeedbackVisuals({ wrong, correctSoFar }) {
     osmdInstance.render();
     osmdInstance.cursor.show();
   }
+  redrawPlayedNoteMarkers();
 }
 
 async function loadSample() {
@@ -134,6 +163,7 @@ function logMidiEvent(event) {
     if (event.type === "on") {
       matcher.noteOn(event.note);
     } else {
+      heldNoteMarkers.delete(event.note);
       matcher.noteOff(event.note);
     }
   }

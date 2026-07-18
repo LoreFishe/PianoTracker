@@ -8,6 +8,41 @@ function pitchClass(midi) {
   return ((midi % 12) + 12) % 12;
 }
 
+// Maps a chromatic semitone (0=C..11=B) to its natural-letter staff step
+// (C=0..B=6), treating black keys as sharps of the letter below (matches
+// how OSMD/VexFlow space noteheads: C# sits on the C line, not the D line).
+const SEMITONE_TO_STAFF_STEP = [0, 0, 1, 1, 2, 3, 3, 4, 4, 5, 5, 6];
+const UNIT_TO_PX = 10; // OSMD's default EngravingRules.unitInPixels
+
+function diatonicStep(midi) {
+  const semitone = ((midi % 12) + 12) % 12;
+  const octave = Math.floor(midi / 12);
+  return octave * 7 + SEMITONE_TO_STAFF_STEP[semitone];
+}
+
+/** Computes the pixel position (within OSMD's SVG) where `midi` would sit
+ * on the staff, by taking the closest currently-expected note as a known
+ * reference point and offsetting by the difference in staff steps. Every
+ * staff step is exactly half a line-spacing apart (verified empirically).
+ * Returns null if there's no expected note to anchor against. */
+export function getStaffPositionForNote(osmd, expected, midi) {
+  if (expected.length === 0) return null;
+  const reference = expected.reduce((closest, exp) =>
+    Math.abs(exp.midi - midi) < Math.abs(closest.midi - midi) ? exp : closest
+  );
+  try {
+    const gnote = osmd.rules.GNote(reference.note);
+    const refPos = gnote.PositionAndShape.AbsolutePosition;
+    const stepDiff = diatonicStep(midi) - diatonicStep(reference.midi);
+    return {
+      x: refPos.x * UNIT_TO_PX,
+      y: (refPos.y - 0.5 * stepDiff) * UNIT_TO_PX,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function expectedNotesAtCursor(osmd) {
   return osmd.cursor
     .NotesUnderCursor()
