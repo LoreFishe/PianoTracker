@@ -4,6 +4,10 @@ function midiFromNote(note) {
   return note.halfTone + 12;
 }
 
+function pitchClass(midi) {
+  return ((midi % 12) + 12) % 12;
+}
+
 function expectedNotesAtCursor(osmd) {
   return osmd.cursor
     .NotesUnderCursor()
@@ -11,24 +15,34 @@ function expectedNotesAtCursor(osmd) {
     .map((note) => ({
       midi: midiFromNote(note),
       staffId: note.ParentStaffEntry.ParentStaff.Id,
+      note,
     }));
 }
 
 /** Tracks the OSMD cursor against played MIDI notes, advancing when all
- * expected notes across both hands are held down together (octave-strict). */
+ * expected notes (chords, across both hands) are held down together.
+ * Octave strictness is toggleable: when off, any octave of the right
+ * pitch class counts as correct. */
 export class NoteMatcher {
-  constructor(osmd) {
+  constructor(osmd, { octaveStrict = true } = {}) {
     this.osmd = osmd;
+    this.octaveStrict = octaveStrict;
     this.heldNotes = new Set();
     this.expected = [];
     this.onAdvance = null;
     this.onComplete = null;
+    this.onWrongNotesChange = null;
   }
 
   start() {
     this.osmd.cursor.show();
     this.osmd.cursor.reset();
     this._updateExpected();
+  }
+
+  setOctaveStrict(strict) {
+    this.octaveStrict = strict;
+    this._checkMatch();
   }
 
   noteOn(midi) {
@@ -38,6 +52,11 @@ export class NoteMatcher {
 
   noteOff(midi) {
     this.heldNotes.delete(midi);
+    this._recomputeWrongNotes();
+  }
+
+  _matches(heldMidi, expectedMidi) {
+    return this.octaveStrict ? heldMidi === expectedMidi : pitchClass(heldMidi) === pitchClass(expectedMidi);
   }
 
   _updateExpected() {
@@ -57,14 +76,30 @@ export class NoteMatcher {
     }
 
     this.onAdvance?.(this.expected);
+    this._recomputeWrongNotes();
   }
 
   _checkMatch() {
     if (this.expected.length === 0) return;
-    const allHeld = this.expected.every((n) => this.heldNotes.has(n.midi));
+    const held = Array.from(this.heldNotes);
+    const allHeld = this.expected.every((exp) => held.some((h) => this._matches(h, exp.midi)));
     if (allHeld) {
       this.osmd.cursor.next();
       this._updateExpected();
+    } else {
+      this._recomputeWrongNotes();
     }
+  }
+
+  _recomputeWrongNotes() {
+    if (!this.onWrongNotesChange) return;
+    if (this.expected.length === 0) {
+      this.onWrongNotesChange([]);
+      return;
+    }
+    const wrong = Array.from(this.heldNotes).filter(
+      (h) => !this.expected.some((exp) => this._matches(h, exp.midi))
+    );
+    this.onWrongNotesChange(wrong);
   }
 }

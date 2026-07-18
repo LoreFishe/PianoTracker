@@ -11,6 +11,21 @@ body {
   padding: 2rem;
 }
 
+#settings {
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+}
+
+#wrong-note-feedback {
+  margin-top: 0.5rem;
+  padding: 0.75rem 1rem;
+  background: #fdecea;
+  border: 1px solid #f3b4ac;
+  border-radius: 8px;
+  color: #b3261e;
+  font-weight: 600;
+}
+
 #expected-notes {
   margin-top: 1rem;
   padding: 0.75rem 1rem;

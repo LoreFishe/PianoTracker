@@ -10,8 +10,16 @@
 <body>
   <main id="app">
     <h1>Piano Practice Tracker</h1>
+    <section id="settings">
+      <label>
+        <input type="checkbox" id="octave-strict-toggle" checked>
+        Octave-strict matching
+      </label>
+    </section>
+
     <div id="osmd-container"></div>
     <p id="expected-notes">Loading score&hellip;</p>
+    <p id="wrong-note-feedback" hidden></p>
 
     <section id="midi-debug">
       <h2>MIDI Debug</h2>

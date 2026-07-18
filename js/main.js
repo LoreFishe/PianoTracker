@@ -4,12 +4,22 @@ import { NoteMatcher } from "./matching.js";
 const SAMPLE_FILE_URL = "samples/sample-grand-staff.musicxml";
 const MAX_LOG_ENTRIES = 100;
 const STAFF_LABELS = { 1: "Right hand", 2: "Left hand" };
+const WRONG_NOTEHEAD_COLOR = "#CC0000";
 
 let matcher = null;
+let osmdInstance = null;
+let coloredWrongNotes = []; // Note objects currently painted red
 
 function renderExpectedNotes(expected) {
   const el = document.getElementById("expected-notes");
-  const parts = expected.map((n) => `${STAFF_LABELS[n.staffId] ?? `Staff ${n.staffId}`}: ${midiNoteToName(n.midi)}`);
+  const byStaff = new Map();
+  for (const n of expected) {
+    if (!byStaff.has(n.staffId)) byStaff.set(n.staffId, []);
+    byStaff.get(n.staffId).push(midiNoteToName(n.midi));
+  }
+  const parts = Array.from(byStaff.entries()).map(
+    ([staffId, names]) => `${STAFF_LABELS[staffId] ?? `Staff ${staffId}`}: ${names.join(" + ")}`
+  );
   el.textContent = `Waiting for — ${parts.join("   |   ")}`;
   el.classList.remove("complete");
 }
@@ -20,12 +30,40 @@ function renderComplete() {
   el.classList.add("complete");
 }
 
+function applyWrongNoteVisuals(wrongMidiNotes) {
+  const feedbackEl = document.getElementById("wrong-note-feedback");
+  const isWrong = wrongMidiNotes.length > 0;
+
+  feedbackEl.hidden = !isWrong;
+  if (isWrong) {
+    feedbackEl.textContent = `Wrong note${wrongMidiNotes.length > 1 ? "s" : ""}: ${wrongMidiNotes
+      .map(midiNoteToName)
+      .join(", ")}`;
+  }
+
+  // Reset any previously-colored expected noteheads, then color the current
+  // expected notes red while a wrong note is being held ("near the target").
+  for (const note of coloredWrongNotes) {
+    note.NoteheadColor = undefined;
+  }
+  coloredWrongNotes = isWrong ? matcher.expected.map((e) => e.note) : [];
+  for (const note of coloredWrongNotes) {
+    note.NoteheadColor = WRONG_NOTEHEAD_COLOR;
+  }
+
+  if (osmdInstance) {
+    osmdInstance.render();
+    osmdInstance.cursor.show();
+  }
+}
+
 async function loadSample() {
   const container = document.getElementById("osmd-container");
   const osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay(container, {
     autoResize: true,
     drawTitle: true,
   });
+  osmdInstance = osmd;
 
   const response = await fetch(SAMPLE_FILE_URL);
   const musicXmlText = await response.text();
@@ -33,10 +71,16 @@ async function loadSample() {
   await osmd.load(musicXmlText);
   osmd.render();
 
-  matcher = new NoteMatcher(osmd);
+  const octaveStrictToggle = document.getElementById("octave-strict-toggle");
+  matcher = new NoteMatcher(osmd, { octaveStrict: octaveStrictToggle.checked });
   matcher.onAdvance = renderExpectedNotes;
   matcher.onComplete = renderComplete;
+  matcher.onWrongNotesChange = applyWrongNoteVisuals;
   matcher.start();
+
+  octaveStrictToggle.addEventListener("change", () => {
+    matcher.setOctaveStrict(octaveStrictToggle.checked);
+  });
 }
 
 loadSample().catch((err) => {
