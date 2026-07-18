@@ -75,7 +75,7 @@ export function walkPiece(osmd, onStep, resumeSteps = 0) {
     steps++;
   }
   osmd.cursor.reset();
-  for (let i = 0; i < resumeSteps; i++) osmd.cursor.next();
+  for (let i = 0; i < resumeSteps && !osmd.cursor.iterator.EndReached; i++) osmd.cursor.next();
   osmd.cursor.show();
 }
 
@@ -170,7 +170,7 @@ export class NoteMatcher {
     this.osmd.cursor.show();
     this.osmd.cursor.reset();
     this.totalAdvances = 0;
-    for (let i = 0; i < resumeSteps; i++) {
+    for (let i = 0; i < resumeSteps && !this.osmd.cursor.iterator.EndReached; i++) {
       this.osmd.cursor.next();
       this.totalAdvances++;
     }
@@ -267,7 +267,7 @@ export class NoteMatcher {
   _loopSection() {
     this.osmd.cursor.reset();
     this.totalAdvances = 0;
-    for (let i = 0; i < this.sectionStart; i++) {
+    for (let i = 0; i < this.sectionStart && !this.osmd.cursor.iterator.EndReached; i++) {
       this.osmd.cursor.next();
       this.totalAdvances++;
     }

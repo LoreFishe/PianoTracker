@@ -234,28 +234,25 @@ function applyFeedbackVisuals({ correctSoFar }) {
   redrawPlayedNoteMarkers();
 }
 
-// Built once per piece load (see openPiece) rather than re-walked on every
-// hand-mode/section change — walking the piece via the cursor is cheap on
-// its own, but combined with followCursor's per-step scroll checks it added
-// up to seconds on a large real piece when done repeatedly.
+// Built once per piece load (see openPiece), always right after a fresh
+// osmd.load()+render() and before the new matcher exists — so there's never
+// a prior position to restore here (that stale reasoning caused a real bug:
+// this used to fall back to a leftover matcher from a *previously* opened
+// piece, whose totalAdvances could exceed this piece's step count entirely).
 function buildPieceNoteCache(osmd) {
   const cache = [];
-  walkPiece(
-    osmd,
-    (stepIndex, notes) => {
-      for (const note of notes) {
-        const pos = getNotePixelPosition(osmd, note);
-        cache.push({
-          note,
-          stepIndex,
-          staffId: note.ParentStaffEntry.ParentStaff.Id,
-          x: pos?.x ?? null,
-          y: pos?.y ?? null,
-        });
-      }
-    },
-    matcher ? matcher.totalAdvances : 0
-  );
+  walkPiece(osmd, (stepIndex, notes) => {
+    for (const note of notes) {
+      const pos = getNotePixelPosition(osmd, note);
+      cache.push({
+        note,
+        stepIndex,
+        staffId: note.ParentStaffEntry.ParentStaff.Id,
+        x: pos?.x ?? null,
+        y: pos?.y ?? null,
+      });
+    }
+  });
   return cache;
 }
 
@@ -339,7 +336,11 @@ function startSectionPractice(startStep, endStep) {
   osmdContainer.classList.remove("selecting-section");
   selectSectionButton.hidden = true;
   exitSectionButton.hidden = false;
-  setSectionInstructions("Practicing this section on a loop.");
+  const noteCount = endStep - startStep + 1;
+  setSectionInstructions(
+    `Practicing this section on a loop (${noteCount} note${noteCount === 1 ? "" : "s"}).` +
+      (noteCount === 1 ? " That's a single note/chord — click Exit and try again if you meant a wider range." : "")
+  );
 }
 
 function exitSectionPractice() {
