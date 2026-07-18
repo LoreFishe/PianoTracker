@@ -16,23 +16,19 @@ body {
   font-size: 0.9rem;
 }
 
-#wrong-note-feedback {
-  margin-top: 0.5rem;
-  padding: 0.75rem 1rem;
-  background: #fdecea;
-  border: 1px solid #f3b4ac;
-  border-radius: 8px;
-  color: #b3261e;
-  font-weight: 600;
+#osmd-container {
+  padding: 1rem 0;
 }
 
 #expected-notes {
   margin-top: 1rem;
-  padding: 0.75rem 1rem;
+  padding: 0.9rem 1.2rem;
   background: #eef4ff;
-  border: 1px solid #cddcf7;
+  border: 2px solid #cddcf7;
   border-radius: 8px;
   font-weight: 600;
+  font-size: 1.1rem;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
 }
 
 #expected-notes.complete {
@@ -41,12 +37,32 @@ body {
   color: #1a7f37;
 }
 
+#wrong-note-feedback {
+  margin-top: 0.6rem;
+  padding: 0.75rem 1.2rem;
+  background: #fdecea;
+  border: 2px solid #e8998e;
+  border-radius: 8px;
+  color: #b3261e;
+  font-weight: 700;
+  font-size: 1.05rem;
+}
+
 #midi-debug {
   margin-top: 2rem;
   padding: 1rem;
   border: 1px solid #ddd;
   border-radius: 8px;
   background: #fff;
+}
+
+#midi-debug summary {
+  font-weight: 700;
+  cursor: pointer;
+}
+
+#midi-debug[open] summary {
+  margin-bottom: 0.75rem;
 }
 
 #midi-status {

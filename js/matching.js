@@ -36,7 +36,8 @@ export class NoteMatcher {
     this.expected = [];
     this.onAdvance = null;
     this.onComplete = null;
-    this.onWrongNotesChange = null;
+    // ({ wrong: number[], correctSoFar: {midi,staffId,note}[] }) => void
+    this.onFeedbackChange = null;
   }
 
   start() {
@@ -58,7 +59,7 @@ export class NoteMatcher {
   noteOff(midi) {
     this.heldNotes.delete(midi);
     this.graceNotes.delete(midi);
-    this._recomputeWrongNotes();
+    this._recomputeFeedback();
   }
 
   _matches(heldMidi, expectedMidi) {
@@ -69,6 +70,7 @@ export class NoteMatcher {
     if (this.osmd.cursor.iterator.EndReached) {
       this.expected = [];
       this.onComplete?.();
+      this._recomputeFeedback();
       return;
     }
 
@@ -82,7 +84,7 @@ export class NoteMatcher {
     }
 
     this.onAdvance?.(this.expected);
-    this._recomputeWrongNotes();
+    this._recomputeFeedback();
   }
 
   _checkMatch() {
@@ -94,19 +96,21 @@ export class NoteMatcher {
       this.osmd.cursor.next();
       this._updateExpected();
     } else {
-      this._recomputeWrongNotes();
+      this._recomputeFeedback();
     }
   }
 
-  _recomputeWrongNotes() {
-    if (!this.onWrongNotesChange) return;
+  _recomputeFeedback() {
+    if (!this.onFeedbackChange) return;
     if (this.expected.length === 0) {
-      this.onWrongNotesChange([]);
+      this.onFeedbackChange({ wrong: [], correctSoFar: [] });
       return;
     }
-    const wrong = Array.from(this.heldNotes).filter(
+    const held = Array.from(this.heldNotes);
+    const wrong = held.filter(
       (h) => !this.graceNotes.has(h) && !this.expected.some((exp) => this._matches(h, exp.midi))
     );
-    this.onWrongNotesChange(wrong);
+    const correctSoFar = this.expected.filter((exp) => held.some((h) => this._matches(h, exp.midi)));
+    this.onFeedbackChange({ wrong, correctSoFar });
   }
 }

@@ -5,10 +5,11 @@ const SAMPLE_FILE_URL = "samples/sample-grand-staff.musicxml";
 const MAX_LOG_ENTRIES = 100;
 const STAFF_LABELS = { 1: "Right hand", 2: "Left hand" };
 const WRONG_NOTEHEAD_COLOR = "#CC0000";
+const CORRECT_NOTEHEAD_COLOR = "#1A7F37";
 
 let matcher = null;
 let osmdInstance = null;
-let coloredWrongNotes = []; // Note objects currently painted red
+let coloredNotes = []; // Note objects currently painted red or green
 
 function renderExpectedNotes(expected) {
   const el = document.getElementById("expected-notes");
@@ -30,25 +31,33 @@ function renderComplete() {
   el.classList.add("complete");
 }
 
-function applyWrongNoteVisuals(wrongMidiNotes) {
+function applyFeedbackVisuals({ wrong, correctSoFar }) {
   const feedbackEl = document.getElementById("wrong-note-feedback");
-  const isWrong = wrongMidiNotes.length > 0;
+  const isWrong = wrong.length > 0;
 
   feedbackEl.hidden = !isWrong;
   if (isWrong) {
-    feedbackEl.textContent = `Wrong note${wrongMidiNotes.length > 1 ? "s" : ""}: ${wrongMidiNotes
-      .map(midiNoteToName)
-      .join(", ")}`;
+    feedbackEl.textContent = `Wrong note${wrong.length > 1 ? "s" : ""}: ${wrong.map(midiNoteToName).join(", ")}`;
   }
 
-  // Reset any previously-colored expected noteheads, then color the current
-  // expected notes red while a wrong note is being held ("near the target").
-  for (const note of coloredWrongNotes) {
+  // Reset every previously-colored notehead, then re-color: red for the
+  // target notes while a wrong note is held, green for expected notes
+  // already correctly held (partial chord progress), visible at a glance.
+  for (const note of coloredNotes) {
     note.NoteheadColor = undefined;
   }
-  coloredWrongNotes = isWrong ? matcher.expected.map((e) => e.note) : [];
-  for (const note of coloredWrongNotes) {
-    note.NoteheadColor = WRONG_NOTEHEAD_COLOR;
+  coloredNotes = [];
+
+  if (isWrong) {
+    for (const entry of matcher.expected) {
+      entry.note.NoteheadColor = WRONG_NOTEHEAD_COLOR;
+      coloredNotes.push(entry.note);
+    }
+  } else {
+    for (const entry of correctSoFar) {
+      entry.note.NoteheadColor = CORRECT_NOTEHEAD_COLOR;
+      coloredNotes.push(entry.note);
+    }
   }
 
   if (osmdInstance) {
@@ -62,6 +71,8 @@ async function loadSample() {
   const osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay(container, {
     autoResize: true,
     drawTitle: true,
+    followCursor: true,
+    cursorsOptions: [{ type: opensheetmusicdisplay.CursorType.Standard, color: "#3B82F6", alpha: 0.25, follow: true }],
   });
   osmdInstance = osmd;
 
@@ -75,7 +86,7 @@ async function loadSample() {
   matcher = new NoteMatcher(osmd, { octaveStrict: octaveStrictToggle.checked });
   matcher.onAdvance = renderExpectedNotes;
   matcher.onComplete = renderComplete;
-  matcher.onWrongNotesChange = applyWrongNoteVisuals;
+  matcher.onFeedbackChange = applyFeedbackVisuals;
   matcher.start();
 
   octaveStrictToggle.addEventListener("change", () => {
