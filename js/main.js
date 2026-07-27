@@ -2,15 +2,15 @@
 // cache lifetime, combined with browsers not always revalidating on a plain
 // reload, has repeatedly served stale JS after a deploy in testing. Bump
 // this string (e.g. to today's date) whenever you deploy a real change.
-import { initMidi, midiNoteToName } from "./midi.js?v=20260718-1";
+import { initMidi, midiNoteToName } from "./midi.js?v=20260718-2";
 import {
   NoteMatcher,
   getStaffPositionForNote,
   getNotePixelPosition,
   walkPiece,
   extractPlaybackNotes,
-} from "./matching.js?v=20260718-1";
-import { Player } from "./playback.js?v=20260718-1";
+} from "./matching.js?v=20260718-2";
+import { Player } from "./playback.js?v=20260718-2";
 import {
   putFileContent,
   getFileContent,
@@ -20,8 +20,8 @@ import {
   getProgress,
   getAllProgress,
   deleteProgress,
-} from "./db.js?v=20260718-1";
-import { renderLibraryList, readUploadedFile } from "./library.js?v=20260718-1";
+} from "./db.js?v=20260718-2";
+import { renderLibraryList, readUploadedFile } from "./library.js?v=20260718-2";
 
 const SAMPLE_FILE_URL = "samples/sample-grand-staff.musicxml";
 const SAMPLE_FILE_NAME = "Sample Grand Staff Exercise.musicxml";
