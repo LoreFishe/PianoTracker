@@ -2,15 +2,15 @@
 // cache lifetime, combined with browsers not always revalidating on a plain
 // reload, has repeatedly served stale JS after a deploy in testing. Bump
 // this string (e.g. to today's date) whenever you deploy a real change.
-import { initMidi, midiNoteToName } from "./midi.js?v=20260718-4";
+import { initMidi, midiNoteToName } from "./midi.js?v=20260718-5";
 import {
   NoteMatcher,
   getStaffPositionForNote,
   getNotePixelPosition,
   walkPiece,
   extractPlaybackNotes,
-} from "./matching.js?v=20260718-4";
-import { Player } from "./playback.js?v=20260718-4";
+} from "./matching.js?v=20260718-5";
+import { Player } from "./playback.js?v=20260718-5";
 import {
   putFileContent,
   getFileContent,
@@ -20,8 +20,8 @@ import {
   getProgress,
   getAllProgress,
   deleteProgress,
-} from "./db.js?v=20260718-4";
-import { renderLibraryList, readUploadedFile } from "./library.js?v=20260718-4";
+} from "./db.js?v=20260718-5";
+import { renderLibraryList, readUploadedFile } from "./library.js?v=20260718-5";
 
 const SAMPLE_FILE_URL = "samples/sample-grand-staff.musicxml";
 const SAMPLE_FILE_NAME = "Sample Grand Staff Exercise.musicxml";
@@ -386,7 +386,10 @@ function findNearestMeasureZone(zones, x, y) {
   return best;
 }
 
-const INACTIVE_OVERLAY_PADDING = 25; // px above/below a staff band's actual note extent
+// px above/below a staff band's actual note extent. Generous on purpose:
+// slurs and beam groups extend well past individual noteheads/stems, and a
+// too-tight overlay left them poking out looking still "active".
+const INACTIVE_OVERLAY_PADDING = 60;
 const INACTIVE_OVERLAY_OPACITY = 0.65;
 
 // Greys out whichever staff/measure combinations are either the deselected
@@ -460,41 +463,59 @@ function setSectionInstructions(text) {
   sectionInstructions.hidden = !text;
 }
 
-const SELECTION_MARKER_COLOR = "#1A7F37";
+const SELECTION_MARKER_COLOR = "#1A7F37"; // green, same visual style as the blue playback cursor
 const SELECTION_MARKER_PADDING = 25; // px above/below a system's actual note extent
+const SELECTION_MARKER_WIDTH = 16; // matches the blue cursor's approximate width
 
-// Live preview of what would be selected if you clicked right now — like the
-// blue playback cursor, but green. Before the first click, previews a single
-// measure under the mouse; after it, previews the full start-to-hover range
-// so picking the end point isn't a guessing game. Draws one rect per system
-// (line) the range touches, rather than one bounding box over everything in
-// between, so a range spanning multiple lines doesn't paint over unrelated
-// staff area.
-function drawSelectionPreview(startStep, endStep) {
+function findNearestNoteEntry(cache, x, y) {
+  let best = null;
+  let bestDist = Infinity;
+  for (const entry of cache) {
+    if (entry.x == null || entry.y == null) continue;
+    const dist = (entry.x - x) ** 2 + (entry.y - y) ** 2;
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = entry;
+    }
+  }
+  return best;
+}
+
+function findSystemForY(y) {
+  let best = null;
+  let bestDist = Infinity;
+  for (const system of measureSystems) {
+    const dist = Math.abs((system.minY + system.maxY) / 2 - y);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = system;
+    }
+  }
+  return best;
+}
+
+// Live preview of exactly where a click would land — same visual language as
+// the blue playback cursor (a thin bar, not a filled block), just green, and
+// tracking the precise nearest note rather than a whole measure's width.
+function drawSelectionPreview(pt) {
   const svg = osmdContainer.querySelector("svg");
   if (!svg) return;
   clearSelectionPreview();
-  if (startStep == null || endStep == null) return;
 
-  const lo = Math.min(startStep, endStep);
-  const hi = Math.max(startStep, endStep);
+  const noteEntry = findNearestNoteEntry(pieceNoteCache, pt.x, pt.y);
+  if (!noteEntry) return;
+  const system = findSystemForY(noteEntry.y);
+  if (!system) return;
 
-  for (const system of measureSystems) {
-    const zonesInRange = system.zones.filter((z) => z.lastStep >= lo && z.firstStep <= hi);
-    if (zonesInRange.length === 0) continue;
-
-    const minX = Math.min(...zonesInRange.map((z) => z.minX));
-    const maxX = Math.max(...zonesInRange.map((z) => z.maxX));
-    const rect = document.createElementNS(SVG_NS, "rect");
-    rect.setAttribute("x", minX - 6);
-    rect.setAttribute("width", maxX - minX + 12);
-    rect.setAttribute("y", system.minY - SELECTION_MARKER_PADDING);
-    rect.setAttribute("height", system.maxY - system.minY + SELECTION_MARKER_PADDING * 2);
-    rect.setAttribute("fill", SELECTION_MARKER_COLOR);
-    rect.setAttribute("fill-opacity", "0.25");
-    rect.setAttribute("class", "selection-start-marker");
-    svg.appendChild(rect);
-  }
+  const rect = document.createElementNS(SVG_NS, "rect");
+  rect.setAttribute("x", noteEntry.x - SELECTION_MARKER_WIDTH / 2);
+  rect.setAttribute("width", SELECTION_MARKER_WIDTH);
+  rect.setAttribute("y", system.minY - SELECTION_MARKER_PADDING);
+  rect.setAttribute("height", system.maxY - system.minY + SELECTION_MARKER_PADDING * 2);
+  rect.setAttribute("fill", SELECTION_MARKER_COLOR);
+  rect.setAttribute("fill-opacity", "0.3");
+  rect.setAttribute("class", "selection-start-marker");
+  svg.appendChild(rect);
 }
 
 function clearSelectionPreview() {
@@ -667,7 +688,7 @@ osmdContainer.addEventListener("click", (event) => {
     if (!zone) return;
     sectionStartStep = zone.firstStep;
     sectionSelectionState = "awaiting-end";
-    drawSelectionPreview(zone.firstStep, zone.lastStep);
+    drawSelectionPreview(pt);
     setSectionInstructions("Click a measure to set the section end.");
     return;
   }
@@ -688,9 +709,9 @@ osmdContainer.addEventListener("click", (event) => {
   matcher.start(stepIndex);
 });
 
-// Live preview while picking a section: before the first click, shows what
-// a click right now would select as the start; after it, shows the full
-// start-to-hover range, so the second click isn't a guess.
+// Live preview while picking a section: a thin green bar (same style as the
+// blue playback cursor) tracks the nearest note under the mouse, so you can
+// see exactly where a click would land before committing to it.
 osmdContainer.addEventListener("mousemove", (event) => {
   if (!sectionSelectionState) return;
   const svg = osmdContainer.querySelector("svg");
@@ -698,14 +719,7 @@ osmdContainer.addEventListener("mousemove", (event) => {
 
   const pt = screenToSvgPoint(svg, event.clientX, event.clientY);
   if (!pt) return;
-  const hoverZone = findNearestMeasureZone(measureZones, pt.x, pt.y);
-  if (!hoverZone) return;
-
-  if (sectionSelectionState === "awaiting-start") {
-    drawSelectionPreview(hoverZone.firstStep, hoverZone.lastStep);
-  } else if (sectionSelectionState === "awaiting-end") {
-    drawSelectionPreview(sectionStartStep, hoverZone.lastStep);
-  }
+  drawSelectionPreview(pt);
 });
 
 async function openPiece(id) {
