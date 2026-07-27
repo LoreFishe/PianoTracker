@@ -2,15 +2,15 @@
 // cache lifetime, combined with browsers not always revalidating on a plain
 // reload, has repeatedly served stale JS after a deploy in testing. Bump
 // this string (e.g. to today's date) whenever you deploy a real change.
-import { initMidi, midiNoteToName } from "./midi.js?v=20260718-5";
+import { initMidi, midiNoteToName } from "./midi.js?v=20260727-1";
 import {
   NoteMatcher,
   getStaffPositionForNote,
   getNotePixelPosition,
   walkPiece,
   extractPlaybackNotes,
-} from "./matching.js?v=20260718-5";
-import { Player } from "./playback.js?v=20260718-5";
+} from "./matching.js?v=20260727-1";
+import { Player } from "./playback.js?v=20260727-1";
 import {
   putFileContent,
   getFileContent,
@@ -20,8 +20,8 @@ import {
   getProgress,
   getAllProgress,
   deleteProgress,
-} from "./db.js?v=20260718-5";
-import { renderLibraryList, readUploadedFile } from "./library.js?v=20260718-5";
+} from "./db.js?v=20260727-1";
+import { renderLibraryList, readUploadedFile } from "./library.js?v=20260727-1";
 
 const SAMPLE_FILE_URL = "samples/sample-grand-staff.musicxml";
 const SAMPLE_FILE_NAME = "Sample Grand Staff Exercise.musicxml";
@@ -270,52 +270,83 @@ function buildPieceNoteCache(osmd) {
   return cache;
 }
 
-const SYSTEM_Y_CLUSTER_THRESHOLD = 50; // px; groups measures on the same line together
-
-// One zone per measure (step range, X extent, average Y), derived from the
-// note cache. Section-boundary clicks snap to whichever measure they land
-// in rather than requiring a pixel-precise note hit — this is what lets
+// One zone per measure (step range, X/Y extent), derived from the note
+// cache. Section-boundary clicks snap to whichever measure they land in
+// rather than requiring a pixel-precise note hit — this is what lets
 // clicking near a barline work as well as clicking a note, and incidentally
 // makes it much harder to accidentally select a near-empty section from an
 // imprecise click. Each zone's clickable X range is bounded by the *gaps* to
 // its neighbors on the same line (not by nearest-center distance) so the
 // decision boundary sits at the actual barline, not skewed toward whichever
 // neighboring measure happens to have a wider spread of notes.
-function buildMeasureZones(cache) {
+// Notes belonging to the same printed measure that are more than this many
+// cursor steps apart are treated as two separate playback passes over that
+// measure (a repeat sign OSMD's cursor unrolls during a linear walk), not
+// one contiguous span — see the occurrences comment below.
+const REPEAT_PASS_STEP_GAP = 100;
+
+function buildMeasureZones(cache, osmd) {
+  // Keyed by the actual SourceMeasure object, not its printed MeasureNumber:
+  // real scores can restart the printed number (e.g. at a Coda) or repeat a
+  // pickup measure's "0", and two different physical measures sharing the
+  // same printed number must not be merged into one giant zone.
   const byMeasure = new Map();
   for (const entry of cache) {
     if (entry.x == null || entry.y == null) continue;
-    let zone = byMeasure.get(entry.measureNumber);
+    const measure = entry.note.SourceMeasure;
+    let zone = byMeasure.get(measure);
     if (!zone) {
       zone = {
         measureNumber: entry.measureNumber,
-        firstStep: entry.stepIndex,
-        lastStep: entry.stepIndex,
+        // One {firstStep, lastStep} per contiguous playback pass. A measure
+        // inside a repeated section is the same printed box on the page but
+        // gets visited twice, at two far-apart step ranges, by OSMD's cursor
+        // (which unrolls repeats for playback order) — merging those into a
+        // single min..max span would make the zone's step range balloon to
+        // cover everything between the two passes, corrupting section
+        // selection and overlay coverage for the entire piece in between.
+        occurrences: [],
         minX: entry.x,
         maxX: entry.x,
         minY: entry.y,
         maxY: entry.y,
-        ySum: 0,
-        yCount: 0,
+        note: entry.note,
       };
-      byMeasure.set(entry.measureNumber, zone);
+      byMeasure.set(measure, zone);
     }
-    zone.firstStep = Math.min(zone.firstStep, entry.stepIndex);
-    zone.lastStep = Math.max(zone.lastStep, entry.stepIndex);
+    const occurrences = zone.occurrences;
+    const current = occurrences[occurrences.length - 1];
+    if (current && entry.stepIndex <= current.lastStep + REPEAT_PASS_STEP_GAP) {
+      current.lastStep = Math.max(current.lastStep, entry.stepIndex);
+    } else {
+      occurrences.push({ firstStep: entry.stepIndex, lastStep: entry.stepIndex });
+    }
     zone.minX = Math.min(zone.minX, entry.x);
     zone.maxX = Math.max(zone.maxX, entry.x);
     zone.minY = Math.min(zone.minY, entry.y);
     zone.maxY = Math.max(zone.maxY, entry.y);
-    zone.ySum += entry.y;
-    zone.yCount += 1;
   }
-  const zones = Array.from(byMeasure.values()).map((z) => ({ ...z, y: z.ySum / z.yCount }));
+  // firstStep/lastStep (used for click-to-select) is the *first* pass over
+  // the measure — the intuitive target when a user clicks the printed box.
+  const zones = Array.from(byMeasure.values()).map((zone) => ({
+    ...zone,
+    firstStep: zone.occurrences[0].firstStep,
+    lastStep: zone.occurrences[0].lastStep,
+  }));
 
-  const rawSystems = [];
-  for (const zone of zones.sort((a, b) => a.firstStep - b.firstStep)) {
-    const system = rawSystems.find((s) => Math.abs(s[0].y - zone.y) < SYSTEM_Y_CLUSTER_THRESHOLD);
-    if (system) system.push(zone);
-    else rawSystems.push([zone]);
+  // Authoritative system (line) membership per measure, straight from OSMD's
+  // own layout graph — NOT inferred from averaged note Y position. Y-
+  // averaging was unreliable: a measure's average note Y shifts with the mix
+  // of treble/bass notes it happens to contain, which could mis-cluster a
+  // measure onto the wrong line, or worse, split a single measure's own
+  // staff bands across two different inferred "systems" — silently dropping
+  // overlay coverage for one of its two staves. calculateXPositionFromTimestamp
+  // returns the actual MusicSystem OSMD placed a given timestamp's notes on.
+  const rawSystems = new Map(); // MusicSystem.Id -> zones[]
+  for (const zone of zones) {
+    const [, musicSystem] = osmd.GraphicSheet.calculateXPositionFromTimestamp(zone.note.getAbsoluteTimestamp());
+    if (!rawSystems.has(musicSystem.Id)) rawSystems.set(musicSystem.Id, []);
+    rawSystems.get(musicSystem.Id).push(zone);
   }
 
   // Systems (lines), top to bottom, each with its own bounds — needed to draw
@@ -323,8 +354,8 @@ function buildMeasureZones(cache) {
   // (one rect per line the range touches, not one rect covering everything
   // in between, which would paint over unrelated staff area), and to grey
   // out one staff (hand) across a whole line independent of section bounds.
-  const systems = rawSystems
-    .sort((a, b) => a[0].y - b[0].y)
+  const systems = Array.from(rawSystems.values())
+    .sort((a, b) => Math.min(...a.map((z) => z.minY)) - Math.min(...b.map((z) => z.minY)))
     .map((zonesInSystem) => {
       zonesInSystem.sort((a, b) => a.minX - b.minX);
       zonesInSystem.forEach((zone, i) => {
@@ -334,10 +365,13 @@ function buildMeasureZones(cache) {
         zone.rightBound = next ? (zone.maxX + next.minX) / 2 : Infinity;
       });
 
-      const measureNumbersInSystem = new Set(zonesInSystem.map((z) => z.measureNumber));
+      // Set of actual SourceMeasure objects, not printed numbers — see the
+      // byMeasure key above for why (a printed number can repeat across two
+      // unrelated physical measures, which must not be merged here either).
+      const measuresInSystem = new Set(zonesInSystem.map((z) => z.note.SourceMeasure));
       const staffBands = {};
       for (const entry of cache) {
-        if (entry.y == null || !measureNumbersInSystem.has(entry.measureNumber)) continue;
+        if (entry.y == null || !measuresInSystem.has(entry.note.SourceMeasure)) continue;
         const band = staffBands[entry.staffId] ?? { minY: entry.y, maxY: entry.y };
         band.minY = Math.min(band.minY, entry.y);
         band.maxY = Math.max(band.maxY, entry.y);
@@ -355,28 +389,31 @@ function buildMeasureZones(cache) {
   return { zones, systems };
 }
 
-function findNearestMeasureZone(zones, x, y) {
-  if (zones.length === 0) return null;
+// Takes `measureSystems` (already grouped by OSMD's authoritative line
+// membership, see buildMeasureZones) rather than a flat zone list, so
+// "nearest line" is resolved by real system bounds instead of re-clustering
+// by proximity a second time.
+function findNearestMeasureZone(systems, x, y) {
+  if (systems.length === 0) return null;
 
-  let nearestY = zones[0].y;
+  let nearestSystem = systems[0];
   let bestYDist = Infinity;
-  for (const zone of zones) {
-    const dist = Math.abs(zone.y - y);
+  for (const system of systems) {
+    const dist = Math.abs((system.minY + system.maxY) / 2 - y);
     if (dist < bestYDist) {
       bestYDist = dist;
-      nearestY = zone.y;
+      nearestSystem = system;
     }
   }
-  const onThisLine = zones.filter((z) => Math.abs(z.y - nearestY) < SYSTEM_Y_CLUSTER_THRESHOLD);
 
-  const containing = onThisLine.find((z) => x >= z.leftBound && x < z.rightBound);
+  const containing = nearestSystem.zones.find((z) => x >= z.leftBound && x < z.rightBound);
   if (containing) return containing;
 
   // Fallback (shouldn't normally hit, since bounds are -Infinity..Infinity
   // at the ends of each line): nearest center on the same line.
   let best = null;
   let bestDist = Infinity;
-  for (const zone of onThisLine) {
+  for (const zone of nearestSystem.zones) {
     const dist = Math.abs((zone.minX + zone.maxX) / 2 - x);
     if (dist < bestDist) {
       bestDist = dist;
@@ -415,7 +452,12 @@ function redrawInactiveOverlay() {
       const handOk = handMode === "both" || (handMode === "right" && staffId === 1) || (handMode === "left" && staffId === 2);
 
       for (const zone of system.zones) {
-        const sectionOk = sectionStart == null || (zone.lastStep >= sectionStart && zone.firstStep <= sectionEnd);
+        // A repeated measure has multiple playback passes at this one printed
+        // box (see occurrences comment in buildMeasureZones) — it counts as
+        // "in section" if ANY pass overlaps, not just the first.
+        const sectionOk =
+          sectionStart == null ||
+          zone.occurrences.some((occ) => occ.lastStep >= sectionStart && occ.firstStep <= sectionEnd);
         if (handOk && sectionOk) continue;
 
         const left = zone.leftBound === -Infinity ? zone.minX - INACTIVE_OVERLAY_PADDING : zone.leftBound;
@@ -425,7 +467,7 @@ function redrawInactiveOverlay() {
         rect.setAttribute("width", right - left);
         rect.setAttribute("y", band.minY - INACTIVE_OVERLAY_PADDING);
         rect.setAttribute("height", band.maxY - band.minY + INACTIVE_OVERLAY_PADDING * 2);
-        rect.setAttribute("fill", "#ffffff");
+        rect.setAttribute("fill", "#f7f7f8"); // matches body background (css/styles.css) so the wash blends in instead of showing as a seam
         rect.setAttribute("fill-opacity", String(INACTIVE_OVERLAY_OPACITY));
         rect.setAttribute("class", "inactive-overlay");
         svg.appendChild(rect);
@@ -684,7 +726,7 @@ osmdContainer.addEventListener("click", (event) => {
   if (!pt) return;
 
   if (sectionSelectionState === "awaiting-start") {
-    const zone = findNearestMeasureZone(measureZones, pt.x, pt.y);
+    const zone = findNearestMeasureZone(measureSystems, pt.x, pt.y);
     if (!zone) return;
     sectionStartStep = zone.firstStep;
     sectionSelectionState = "awaiting-end";
@@ -693,7 +735,7 @@ osmdContainer.addEventListener("click", (event) => {
     return;
   }
   if (sectionSelectionState === "awaiting-end") {
-    const zone = findNearestMeasureZone(measureZones, pt.x, pt.y);
+    const zone = findNearestMeasureZone(measureSystems, pt.x, pt.y);
     if (!zone) return;
     const start = Math.min(sectionStartStep, zone.firstStep);
     const end = Math.max(sectionStartStep, zone.lastStep);
@@ -760,7 +802,7 @@ async function openPiece(id) {
     await osmd.load(fileContent.musicXmlText);
     osmd.render();
     pieceNoteCache = buildPieceNoteCache(osmd);
-    ({ zones: measureZones, systems: measureSystems } = buildMeasureZones(pieceNoteCache));
+    ({ zones: measureZones, systems: measureSystems } = buildMeasureZones(pieceNoteCache, osmd));
     // Needs pieceNoteCache populated first, since chip labels look up
     // measure numbers from it.
     renderSavedSections();
