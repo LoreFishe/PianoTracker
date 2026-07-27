@@ -2,15 +2,15 @@
 // cache lifetime, combined with browsers not always revalidating on a plain
 // reload, has repeatedly served stale JS after a deploy in testing. Bump
 // this string (e.g. to today's date) whenever you deploy a real change.
-import { initMidi, midiNoteToName } from "./midi.js?v=20260718-3";
+import { initMidi, midiNoteToName } from "./midi.js?v=20260718-4";
 import {
   NoteMatcher,
   getStaffPositionForNote,
   getNotePixelPosition,
   walkPiece,
   extractPlaybackNotes,
-} from "./matching.js?v=20260718-3";
-import { Player } from "./playback.js?v=20260718-3";
+} from "./matching.js?v=20260718-4";
+import { Player } from "./playback.js?v=20260718-4";
 import {
   putFileContent,
   getFileContent,
@@ -20,8 +20,8 @@ import {
   getProgress,
   getAllProgress,
   deleteProgress,
-} from "./db.js?v=20260718-3";
-import { renderLibraryList, readUploadedFile } from "./library.js?v=20260718-3";
+} from "./db.js?v=20260718-4";
+import { renderLibraryList, readUploadedFile } from "./library.js?v=20260718-4";
 
 const SAMPLE_FILE_URL = "samples/sample-grand-staff.musicxml";
 const SAMPLE_FILE_NAME = "Sample Grand Staff Exercise.musicxml";
@@ -29,7 +29,6 @@ const MAX_LOG_ENTRIES = 100;
 const STAFF_LABELS = { 1: "Right hand", 2: "Left hand" };
 const WRONG_NOTEHEAD_COLOR = "#CC0000";
 const CORRECT_NOTEHEAD_COLOR = "#1A7F37";
-const INACTIVE_HAND_COLOR = "#BBBBBB";
 const SVG_NS = "http://www.w3.org/2000/svg";
 const DEFAULT_BPM = 100;
 
@@ -70,6 +69,7 @@ let preSectionPosition = 0;
 // clicking near a barline works as well as clicking a specific note).
 let pieceNoteCache = [];
 let measureZones = [];
+let measureSystems = []; // measureZones grouped by line, for multi-line range highlighting
 
 function showLibraryView() {
   player.stop();
@@ -288,6 +288,7 @@ function buildMeasureZones(cache) {
     let zone = byMeasure.get(entry.measureNumber);
     if (!zone) {
       zone = {
+        measureNumber: entry.measureNumber,
         firstStep: entry.stepIndex,
         lastStep: entry.stepIndex,
         minX: entry.x,
@@ -310,22 +311,48 @@ function buildMeasureZones(cache) {
   }
   const zones = Array.from(byMeasure.values()).map((z) => ({ ...z, y: z.ySum / z.yCount }));
 
-  const systems = [];
+  const rawSystems = [];
   for (const zone of zones.sort((a, b) => a.firstStep - b.firstStep)) {
-    const system = systems.find((s) => Math.abs(s[0].y - zone.y) < SYSTEM_Y_CLUSTER_THRESHOLD);
+    const system = rawSystems.find((s) => Math.abs(s[0].y - zone.y) < SYSTEM_Y_CLUSTER_THRESHOLD);
     if (system) system.push(zone);
-    else systems.push([zone]);
+    else rawSystems.push([zone]);
   }
-  for (const system of systems) {
-    system.sort((a, b) => a.minX - b.minX);
-    system.forEach((zone, i) => {
-      const prev = system[i - 1];
-      const next = system[i + 1];
-      zone.leftBound = prev ? (prev.maxX + zone.minX) / 2 : -Infinity;
-      zone.rightBound = next ? (zone.maxX + next.minX) / 2 : Infinity;
+
+  // Systems (lines), top to bottom, each with its own bounds — needed to draw
+  // a live selection-range highlight that spans multiple lines correctly
+  // (one rect per line the range touches, not one rect covering everything
+  // in between, which would paint over unrelated staff area), and to grey
+  // out one staff (hand) across a whole line independent of section bounds.
+  const systems = rawSystems
+    .sort((a, b) => a[0].y - b[0].y)
+    .map((zonesInSystem) => {
+      zonesInSystem.sort((a, b) => a.minX - b.minX);
+      zonesInSystem.forEach((zone, i) => {
+        const prev = zonesInSystem[i - 1];
+        const next = zonesInSystem[i + 1];
+        zone.leftBound = prev ? (prev.maxX + zone.minX) / 2 : -Infinity;
+        zone.rightBound = next ? (zone.maxX + next.minX) / 2 : Infinity;
+      });
+
+      const measureNumbersInSystem = new Set(zonesInSystem.map((z) => z.measureNumber));
+      const staffBands = {};
+      for (const entry of cache) {
+        if (entry.y == null || !measureNumbersInSystem.has(entry.measureNumber)) continue;
+        const band = staffBands[entry.staffId] ?? { minY: entry.y, maxY: entry.y };
+        band.minY = Math.min(band.minY, entry.y);
+        band.maxY = Math.max(band.maxY, entry.y);
+        staffBands[entry.staffId] = band;
+      }
+
+      return {
+        zones: zonesInSystem,
+        minY: Math.min(...zonesInSystem.map((z) => z.minY)),
+        maxY: Math.max(...zonesInSystem.map((z) => z.maxY)),
+        staffBands,
+      };
     });
-  }
-  return zones;
+
+  return { zones, systems };
 }
 
 function findNearestMeasureZone(zones, x, y) {
@@ -359,27 +386,49 @@ function findNearestMeasureZone(zones, x, y) {
   return best;
 }
 
-// Greys out notes that are either the deselected hand or outside the active
-// practice section (both conditions checked together, since either one can
-// apply at once). No walking — just recolors from the cache — so the only
-// real cost is the render() call itself, which is fine here since this only
-// runs on a deliberate hand-mode/section change, never per keystroke.
-function applyGreyOut() {
-  if (!osmdInstance || !matcher) return;
+const INACTIVE_OVERLAY_PADDING = 25; // px above/below a staff band's actual note extent
+const INACTIVE_OVERLAY_OPACITY = 0.65;
+
+// Greys out whichever staff/measure combinations are either the deselected
+// hand or outside the active practice section (both conditions checked
+// together, since either can apply at once — right-hand-only *and* a
+// section both grey out the left hand entirely and everything horizontally
+// outside the section). Draws a semi-opaque white wash over the whole cell
+// (notehead, stem, beams, and the staff lines underneath) rather than
+// recoloring individual note elements, which only ever affected noteheads —
+// stems/staff lines stayed black. This also means no osmd.render() call is
+// needed here at all, unlike the old notehead-recoloring approach: switching
+// hand mode or a section is now instant regardless of piece size.
+function redrawInactiveOverlay() {
+  const svg = osmdContainer.querySelector("svg");
+  if (!svg || !matcher) return;
+  svg.querySelectorAll(".inactive-overlay").forEach((el) => el.remove());
+
   const { handMode, sectionStart, sectionEnd } = matcher;
 
-  for (const entry of pieceNoteCache) {
-    const handOk =
-      handMode === "both" || (handMode === "right" && entry.staffId === 1) || (handMode === "left" && entry.staffId === 2);
-    const sectionOk = sectionStart == null || (entry.stepIndex >= sectionStart && entry.stepIndex <= sectionEnd);
-    entry.note.NoteheadColor = handOk && sectionOk ? undefined : INACTIVE_HAND_COLOR;
-  }
-  osmdInstance.render();
-  osmdInstance.cursor.show();
+  for (const system of measureSystems) {
+    for (const [staffIdStr, band] of Object.entries(system.staffBands)) {
+      const staffId = Number(staffIdStr);
+      const handOk = handMode === "both" || (handMode === "right" && staffId === 1) || (handMode === "left" && staffId === 2);
 
-  // render() just wiped our SVG overlay markers; redraw them for the current
-  // position (re-applying the same hand mode is a cheap way to force that).
-  matcher.setHandMode(matcher.handMode);
+      for (const zone of system.zones) {
+        const sectionOk = sectionStart == null || (zone.lastStep >= sectionStart && zone.firstStep <= sectionEnd);
+        if (handOk && sectionOk) continue;
+
+        const left = zone.leftBound === -Infinity ? zone.minX - INACTIVE_OVERLAY_PADDING : zone.leftBound;
+        const right = zone.rightBound === Infinity ? zone.maxX + INACTIVE_OVERLAY_PADDING : zone.rightBound;
+        const rect = document.createElementNS(SVG_NS, "rect");
+        rect.setAttribute("x", left);
+        rect.setAttribute("width", right - left);
+        rect.setAttribute("y", band.minY - INACTIVE_OVERLAY_PADDING);
+        rect.setAttribute("height", band.maxY - band.minY + INACTIVE_OVERLAY_PADDING * 2);
+        rect.setAttribute("fill", "#ffffff");
+        rect.setAttribute("fill-opacity", String(INACTIVE_OVERLAY_OPACITY));
+        rect.setAttribute("class", "inactive-overlay");
+        svg.appendChild(rect);
+      }
+    }
+  }
 }
 
 function findNearestStep(cache, x, y) {
@@ -412,28 +461,43 @@ function setSectionInstructions(text) {
 }
 
 const SELECTION_MARKER_COLOR = "#1A7F37";
-const SELECTION_MARKER_PADDING = 25; // px above/below the measure's note extent
+const SELECTION_MARKER_PADDING = 25; // px above/below a system's actual note extent
 
-// Shows where the section-start click landed — like the blue playback
-// cursor, but green, so picking the second point isn't a guessing game.
-function drawSelectionStartMarker(zone) {
+// Live preview of what would be selected if you clicked right now — like the
+// blue playback cursor, but green. Before the first click, previews a single
+// measure under the mouse; after it, previews the full start-to-hover range
+// so picking the end point isn't a guessing game. Draws one rect per system
+// (line) the range touches, rather than one bounding box over everything in
+// between, so a range spanning multiple lines doesn't paint over unrelated
+// staff area.
+function drawSelectionPreview(startStep, endStep) {
   const svg = osmdContainer.querySelector("svg");
   if (!svg) return;
-  clearSelectionStartMarker();
-  if (!zone) return;
+  clearSelectionPreview();
+  if (startStep == null || endStep == null) return;
 
-  const rect = document.createElementNS(SVG_NS, "rect");
-  rect.setAttribute("x", zone.minX - 6);
-  rect.setAttribute("y", zone.minY - SELECTION_MARKER_PADDING);
-  rect.setAttribute("width", zone.maxX - zone.minX + 12);
-  rect.setAttribute("height", zone.maxY - zone.minY + SELECTION_MARKER_PADDING * 2);
-  rect.setAttribute("fill", SELECTION_MARKER_COLOR);
-  rect.setAttribute("fill-opacity", "0.25");
-  rect.setAttribute("class", "selection-start-marker");
-  svg.appendChild(rect);
+  const lo = Math.min(startStep, endStep);
+  const hi = Math.max(startStep, endStep);
+
+  for (const system of measureSystems) {
+    const zonesInRange = system.zones.filter((z) => z.lastStep >= lo && z.firstStep <= hi);
+    if (zonesInRange.length === 0) continue;
+
+    const minX = Math.min(...zonesInRange.map((z) => z.minX));
+    const maxX = Math.max(...zonesInRange.map((z) => z.maxX));
+    const rect = document.createElementNS(SVG_NS, "rect");
+    rect.setAttribute("x", minX - 6);
+    rect.setAttribute("width", maxX - minX + 12);
+    rect.setAttribute("y", system.minY - SELECTION_MARKER_PADDING);
+    rect.setAttribute("height", system.maxY - system.minY + SELECTION_MARKER_PADDING * 2);
+    rect.setAttribute("fill", SELECTION_MARKER_COLOR);
+    rect.setAttribute("fill-opacity", "0.25");
+    rect.setAttribute("class", "selection-start-marker");
+    svg.appendChild(rect);
+  }
 }
 
-function clearSelectionStartMarker() {
+function clearSelectionPreview() {
   osmdContainer.querySelectorAll(".selection-start-marker").forEach((el) => el.remove());
 }
 
@@ -450,7 +514,7 @@ function beginSectionSelection() {
 function cancelSectionSelection() {
   sectionSelectionState = null;
   sectionStartStep = null;
-  clearSelectionStartMarker();
+  clearSelectionPreview();
   osmdContainer.classList.remove("selecting-section");
   selectSectionButton.textContent = "Practice a section…";
   selectSectionButton.classList.remove("selecting");
@@ -472,9 +536,9 @@ function measureRangeLabel(startStep, endStep) {
 function startSectionPractice(startStep, endStep) {
   preSectionPosition = matcher.totalAdvances;
   heldNoteMarkers = new Map();
-  clearSelectionStartMarker();
+  clearSelectionPreview();
   matcher.startSection(startStep, endStep);
-  applyGreyOut();
+  redrawInactiveOverlay();
 
   osmdContainer.classList.remove("selecting-section");
   selectSectionButton.hidden = true;
@@ -488,7 +552,7 @@ function exitSectionPractice() {
   matcher.stopSection();
   heldNoteMarkers = new Map();
   matcher.start(preSectionPosition);
-  applyGreyOut(); // un-grey the rest of the piece (unless a single hand is also selected)
+  redrawInactiveOverlay(); // un-grey the rest of the piece (unless a single hand is also selected)
 
   selectSectionButton.hidden = false;
   exitSectionButton.hidden = true;
@@ -603,7 +667,7 @@ osmdContainer.addEventListener("click", (event) => {
     if (!zone) return;
     sectionStartStep = zone.firstStep;
     sectionSelectionState = "awaiting-end";
-    drawSelectionStartMarker(zone);
+    drawSelectionPreview(zone.firstStep, zone.lastStep);
     setSectionInstructions("Click a measure to set the section end.");
     return;
   }
@@ -622,6 +686,26 @@ osmdContainer.addEventListener("click", (event) => {
   if (stepIndex == null) return;
   heldNoteMarkers = new Map();
   matcher.start(stepIndex);
+});
+
+// Live preview while picking a section: before the first click, shows what
+// a click right now would select as the start; after it, shows the full
+// start-to-hover range, so the second click isn't a guess.
+osmdContainer.addEventListener("mousemove", (event) => {
+  if (!sectionSelectionState) return;
+  const svg = osmdContainer.querySelector("svg");
+  if (!svg) return;
+
+  const pt = screenToSvgPoint(svg, event.clientX, event.clientY);
+  if (!pt) return;
+  const hoverZone = findNearestMeasureZone(measureZones, pt.x, pt.y);
+  if (!hoverZone) return;
+
+  if (sectionSelectionState === "awaiting-start") {
+    drawSelectionPreview(hoverZone.firstStep, hoverZone.lastStep);
+  } else if (sectionSelectionState === "awaiting-end") {
+    drawSelectionPreview(sectionStartStep, hoverZone.lastStep);
+  }
 });
 
 async function openPiece(id) {
@@ -662,7 +746,7 @@ async function openPiece(id) {
     await osmd.load(fileContent.musicXmlText);
     osmd.render();
     pieceNoteCache = buildPieceNoteCache(osmd);
-    measureZones = buildMeasureZones(pieceNoteCache);
+    ({ zones: measureZones, systems: measureSystems } = buildMeasureZones(pieceNoteCache));
     // Needs pieceNoteCache populated first, since chip labels look up
     // measure numbers from it.
     renderSavedSections();
@@ -683,7 +767,7 @@ async function openPiece(id) {
     matcher.start(0);
     // Skip the extra render for the common default case (nothing to grey out).
     if (currentEntry.settings.handMode !== "both") {
-      applyGreyOut();
+      redrawInactiveOverlay();
     }
   } catch (err) {
     console.error("Failed to load piece:", err);
@@ -706,7 +790,7 @@ for (const button of handModeButtons) {
     const mode = button.dataset.handMode;
     matcher.setHandMode(mode);
     setHandModeButtonsActive(mode);
-    applyGreyOut();
+    redrawInactiveOverlay();
     if (currentEntry) {
       currentEntry.settings.handMode = mode;
       saveCurrentEntry();
