@@ -53,6 +53,7 @@ body {
 
 #select-section-button,
 #exit-section-button,
+#save-section-button,
 #play-button {
   padding: 0.4rem 0.9rem;
   border-radius: 8px;
@@ -66,8 +67,56 @@ body {
 
 #select-section-button:hover,
 #exit-section-button:hover,
+#save-section-button:hover,
 #play-button:hover {
   background: #f0f0f0;
+}
+
+#save-section-button {
+  border-color: #1a7f37;
+  color: #1a7f37;
+}
+
+#saved-sections-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.saved-section-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.5rem 0.3rem 0.9rem;
+  background: #eef4ff;
+  border: 1px solid #cddcf7;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #1a3a7a;
+}
+
+.saved-section-chip button {
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-weight: 700;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  color: inherit;
+}
+
+.saved-section-chip button.practice-saved-section:hover {
+  background: #cddcf7;
+}
+
+.saved-section-chip button.delete-saved-section {
+  color: #b3261e;
+}
+
+.saved-section-chip button.delete-saved-section:hover {
+  background: #fdecea;
 }
 
 #play-button {

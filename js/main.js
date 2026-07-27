@@ -2,15 +2,15 @@
 // cache lifetime, combined with browsers not always revalidating on a plain
 // reload, has repeatedly served stale JS after a deploy in testing. Bump
 // this string (e.g. to today's date) whenever you deploy a real change.
-import { initMidi, midiNoteToName } from "./midi.js?v=20260718-2";
+import { initMidi, midiNoteToName } from "./midi.js?v=20260718-3";
 import {
   NoteMatcher,
   getStaffPositionForNote,
   getNotePixelPosition,
   walkPiece,
   extractPlaybackNotes,
-} from "./matching.js?v=20260718-2";
-import { Player } from "./playback.js?v=20260718-2";
+} from "./matching.js?v=20260718-3";
+import { Player } from "./playback.js?v=20260718-3";
 import {
   putFileContent,
   getFileContent,
@@ -20,8 +20,8 @@ import {
   getProgress,
   getAllProgress,
   deleteProgress,
-} from "./db.js?v=20260718-2";
-import { renderLibraryList, readUploadedFile } from "./library.js?v=20260718-2";
+} from "./db.js?v=20260718-3";
+import { renderLibraryList, readUploadedFile } from "./library.js?v=20260718-3";
 
 const SAMPLE_FILE_URL = "samples/sample-grand-staff.musicxml";
 const SAMPLE_FILE_NAME = "Sample Grand Staff Exercise.musicxml";
@@ -47,6 +47,8 @@ const octaveStrictToggle = document.getElementById("octave-strict-toggle");
 const handModeButtons = Array.from(document.querySelectorAll(".hand-mode-button"));
 const selectSectionButton = document.getElementById("select-section-button");
 const exitSectionButton = document.getElementById("exit-section-button");
+const saveSectionButton = document.getElementById("save-section-button");
+const savedSectionsList = document.getElementById("saved-sections-list");
 const sectionInstructions = document.getElementById("section-instructions");
 const osmdContainer = document.getElementById("osmd-container");
 const playButton = document.getElementById("play-button");
@@ -86,7 +88,12 @@ function showPracticeView() {
 }
 
 const DEFAULT_SETTINGS = { octaveStrict: true, handMode: "both" };
-const DEFAULT_PROGRESS = { stepIndex: 0, completed: false };
+// A function, not a shared object constant: savedSections is an array, and a
+// shared default would mean every piece's "empty" progress pushes into the
+// *same* array reference the moment one piece saves a section.
+function defaultProgress() {
+  return { stepIndex: 0, completed: false, savedSections: [] };
+}
 
 function setHandModeButtonsActive(mode) {
   for (const button of handModeButtons) {
@@ -103,7 +110,7 @@ async function getLibraryEntries() {
       id: file.id,
       fileName: file.fileName,
       settings: p?.settings ?? DEFAULT_SETTINGS,
-      progress: p?.progress ?? DEFAULT_PROGRESS,
+      progress: p?.progress ?? defaultProgress(),
       updatedAt: p?.updatedAt ?? file.createdAt,
     };
   });
@@ -280,13 +287,24 @@ function buildMeasureZones(cache) {
     if (entry.x == null || entry.y == null) continue;
     let zone = byMeasure.get(entry.measureNumber);
     if (!zone) {
-      zone = { firstStep: entry.stepIndex, lastStep: entry.stepIndex, minX: entry.x, maxX: entry.x, ySum: 0, yCount: 0 };
+      zone = {
+        firstStep: entry.stepIndex,
+        lastStep: entry.stepIndex,
+        minX: entry.x,
+        maxX: entry.x,
+        minY: entry.y,
+        maxY: entry.y,
+        ySum: 0,
+        yCount: 0,
+      };
       byMeasure.set(entry.measureNumber, zone);
     }
     zone.firstStep = Math.min(zone.firstStep, entry.stepIndex);
     zone.lastStep = Math.max(zone.lastStep, entry.stepIndex);
     zone.minX = Math.min(zone.minX, entry.x);
     zone.maxX = Math.max(zone.maxX, entry.x);
+    zone.minY = Math.min(zone.minY, entry.y);
+    zone.maxY = Math.max(zone.maxY, entry.y);
     zone.ySum += entry.y;
     zone.yCount += 1;
   }
@@ -393,6 +411,32 @@ function setSectionInstructions(text) {
   sectionInstructions.hidden = !text;
 }
 
+const SELECTION_MARKER_COLOR = "#1A7F37";
+const SELECTION_MARKER_PADDING = 25; // px above/below the measure's note extent
+
+// Shows where the section-start click landed — like the blue playback
+// cursor, but green, so picking the second point isn't a guessing game.
+function drawSelectionStartMarker(zone) {
+  const svg = osmdContainer.querySelector("svg");
+  if (!svg) return;
+  clearSelectionStartMarker();
+  if (!zone) return;
+
+  const rect = document.createElementNS(SVG_NS, "rect");
+  rect.setAttribute("x", zone.minX - 6);
+  rect.setAttribute("y", zone.minY - SELECTION_MARKER_PADDING);
+  rect.setAttribute("width", zone.maxX - zone.minX + 12);
+  rect.setAttribute("height", zone.maxY - zone.minY + SELECTION_MARKER_PADDING * 2);
+  rect.setAttribute("fill", SELECTION_MARKER_COLOR);
+  rect.setAttribute("fill-opacity", "0.25");
+  rect.setAttribute("class", "selection-start-marker");
+  svg.appendChild(rect);
+}
+
+function clearSelectionStartMarker() {
+  osmdContainer.querySelectorAll(".selection-start-marker").forEach((el) => el.remove());
+}
+
 function beginSectionSelection() {
   if (!matcher || matcher.sectionEnd != null) return;
   sectionSelectionState = "awaiting-start";
@@ -406,6 +450,7 @@ function beginSectionSelection() {
 function cancelSectionSelection() {
   sectionSelectionState = null;
   sectionStartStep = null;
+  clearSelectionStartMarker();
   osmdContainer.classList.remove("selecting-section");
   selectSectionButton.textContent = "Practice a section…";
   selectSectionButton.classList.remove("selecting");
@@ -417,25 +462,25 @@ function measureNumberForStep(step) {
   return entry ? entry.measureNumber : null;
 }
 
+function measureRangeLabel(startStep, endStep) {
+  const startMeasure = measureNumberForStep(startStep);
+  const endMeasure = measureNumberForStep(endStep);
+  if (startMeasure == null || endMeasure == null) return "selected range";
+  return startMeasure === endMeasure ? `measure ${startMeasure}` : `measures ${startMeasure}–${endMeasure}`;
+}
+
 function startSectionPractice(startStep, endStep) {
   preSectionPosition = matcher.totalAdvances;
   heldNoteMarkers = new Map();
+  clearSelectionStartMarker();
   matcher.startSection(startStep, endStep);
   applyGreyOut();
 
   osmdContainer.classList.remove("selecting-section");
   selectSectionButton.hidden = true;
   exitSectionButton.hidden = false;
-
-  const startMeasure = measureNumberForStep(startStep);
-  const endMeasure = measureNumberForStep(endStep);
-  const range =
-    startMeasure != null && endMeasure != null
-      ? startMeasure === endMeasure
-        ? `measure ${startMeasure}`
-        : `measures ${startMeasure}–${endMeasure}`
-      : "selected range";
-  setSectionInstructions(`Practicing ${range} on a loop.`);
+  saveSectionButton.hidden = false;
+  setSectionInstructions(`Practicing ${measureRangeLabel(startStep, endStep)} on a loop.`);
 }
 
 function exitSectionPractice() {
@@ -447,8 +492,63 @@ function exitSectionPractice() {
 
   selectSectionButton.hidden = false;
   exitSectionButton.hidden = true;
+  saveSectionButton.hidden = true;
   setSectionInstructions("");
 }
+
+function renderSavedSections() {
+  savedSectionsList.innerHTML = "";
+  if (!currentEntry) return;
+
+  for (const section of currentEntry.progress.savedSections) {
+    const chip = document.createElement("span");
+    chip.className = "saved-section-chip";
+
+    const label = document.createElement("span");
+    label.textContent = `${section.name} (${measureRangeLabel(section.startStep, section.endStep)})`;
+    chip.appendChild(label);
+
+    const practiceBtn = document.createElement("button");
+    practiceBtn.className = "practice-saved-section";
+    practiceBtn.type = "button";
+    practiceBtn.textContent = "▶";
+    practiceBtn.title = "Practice this saved section";
+    practiceBtn.addEventListener("click", () => {
+      cancelSectionSelection();
+      startSectionPractice(section.startStep, section.endStep);
+    });
+    chip.appendChild(practiceBtn);
+
+    const deleteBtn = document.createElement("button");
+    deleteBtn.className = "delete-saved-section";
+    deleteBtn.type = "button";
+    deleteBtn.textContent = "✕";
+    deleteBtn.title = "Delete this saved section";
+    deleteBtn.addEventListener("click", () => {
+      currentEntry.progress.savedSections = currentEntry.progress.savedSections.filter((s) => s.id !== section.id);
+      saveCurrentEntry();
+      renderSavedSections();
+    });
+    chip.appendChild(deleteBtn);
+
+    savedSectionsList.appendChild(chip);
+  }
+}
+
+saveSectionButton.addEventListener("click", () => {
+  if (!matcher || matcher.sectionEnd == null || !currentEntry) return;
+  const suggested = measureRangeLabel(matcher.sectionStart, matcher.sectionEnd);
+  const name = prompt("Name this section:", suggested);
+  if (!name) return;
+  currentEntry.progress.savedSections.push({
+    id: crypto.randomUUID(),
+    name,
+    startStep: matcher.sectionStart,
+    endStep: matcher.sectionEnd,
+  });
+  saveCurrentEntry();
+  renderSavedSections();
+});
 
 selectSectionButton.addEventListener("click", () => {
   if (sectionSelectionState) {
@@ -503,6 +603,7 @@ osmdContainer.addEventListener("click", (event) => {
     if (!zone) return;
     sectionStartStep = zone.firstStep;
     sectionSelectionState = "awaiting-end";
+    drawSelectionStartMarker(zone);
     setSectionInstructions("Click a measure to set the section end.");
     return;
   }
@@ -530,7 +631,7 @@ async function openPiece(id) {
   // Merge over defaults (not just fall back to them) so settings added after a
   // file was first saved — like hand mode — still get a sane value.
   const settings = { ...DEFAULT_SETTINGS, ...progressRecord?.settings };
-  const progress = { ...DEFAULT_PROGRESS, ...progressRecord?.progress };
+  const progress = { ...defaultProgress(), ...progressRecord?.progress };
   currentEntry = { id, fileName: fileContent.fileName, settings, progress };
 
   showPracticeView();
@@ -545,6 +646,7 @@ async function openPiece(id) {
   preSectionPosition = 0;
   selectSectionButton.hidden = false;
   exitSectionButton.hidden = true;
+  saveSectionButton.hidden = true;
   player.stop();
   updatePlayButtonLabel();
 
@@ -561,6 +663,9 @@ async function openPiece(id) {
     osmd.render();
     pieceNoteCache = buildPieceNoteCache(osmd);
     measureZones = buildMeasureZones(pieceNoteCache);
+    // Needs pieceNoteCache populated first, since chip labels look up
+    // measure numbers from it.
+    renderSavedSections();
 
     octaveStrictToggle.checked = currentEntry.settings.octaveStrict;
     setHandModeButtonsActive(currentEntry.settings.handMode);
@@ -623,7 +728,7 @@ fileUpload.addEventListener("change", async () => {
     const now = Date.now();
     await Promise.all([
       putFileContent({ id, fileName: file.name, musicXmlText, createdAt: now }),
-      putProgress({ id, settings: { ...DEFAULT_SETTINGS }, progress: { ...DEFAULT_PROGRESS }, updatedAt: now }),
+      putProgress({ id, settings: { ...DEFAULT_SETTINGS }, progress: defaultProgress(), updatedAt: now }),
     ]);
     fileUpload.value = "";
     openPiece(id);
@@ -644,7 +749,7 @@ async function initLibrary() {
     const now = Date.now();
     await Promise.all([
       putFileContent({ id, fileName: SAMPLE_FILE_NAME, musicXmlText, createdAt: now }),
-      putProgress({ id, settings: { ...DEFAULT_SETTINGS }, progress: { ...DEFAULT_PROGRESS }, updatedAt: now }),
+      putProgress({ id, settings: { ...DEFAULT_SETTINGS }, progress: defaultProgress(), updatedAt: now }),
     ]);
   }
   await refreshLibraryList();
