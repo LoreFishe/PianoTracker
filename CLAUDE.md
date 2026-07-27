@@ -1,10 +1,18 @@
-# Piano Practice Tracker — Project Spec
+# Tonic — Project Spec
 
 ## Overview
 
 A browser-based sheet music practice tool, similar in spirit to Piano Marvel. It renders
 MusicXML sheet music (exported from MuseScore) and tracks the user's playing via a MIDI
 keyboard connected to a laptop, advancing through the score as correct notes are played.
+
+The app is named **Tonic**. Beyond following along with a piece, the broader goal is
+building key fluency and ear/improvisation skill: practicing the same piece in different
+keys, seeing what you're playing analyzed in real time (chord names, Roman numerals,
+scale degrees), and dedicated ear-training and generated-drill tools. Phases 0–9 below
+are the original follow-along/tempo-practice core; Phase 10 onward (after the phase-9
+divider) is this expanded direction — see that section for the phase breakdown and the
+reasoning behind its ordering.
 
 **Platform for this phase: laptop / desktop browser only** (Chrome or Edge, which support
 the Web MIDI API). An iPhone-compatible version is a known future goal but is explicitly
@@ -167,6 +175,87 @@ point of this structure is that each step is checkable in isolation.
 - Post-hoc accuracy scoring instead of gating advancement
 - **Verify:** user plays through a piece in play-along mode at a set tempo, reviews the
   resulting accuracy summary and confirms it's sensible
+
+---
+
+## Phase 10+ — The Tonic Expansion
+
+Everything above is the original follow-along/tempo-practice core. This section is a
+later addition: a rebrand (the app is called **Tonic**) plus a set of features aimed
+squarely at key fluency and ear/improvisation skill, worked out in a separate design
+pass (a mockup lives at `Visual Mockup and Redesign/tonic-layout-mockup.html`). The
+ordering below isn't arbitrary — Phase 10 gives every later phase a place to live, and
+Phase 11's shared "current key" concept is what Phases 12 and 14 both read from.
+
+### Phase 10 — Rebrand & Shell Layout
+- Tonic visual identity (palette, typography) applied throughout
+- Persistent topbar/sidebar/main/HUD shell replaces the current two-page (library view
+  / practice view) swap — sidebar holds a pinned **Free play** entry, a **Library**
+  section, and a **Learning tools** section (visually present but inert until the
+  phases that implement them)
+- HUD panel exists in the shell (open/closed toggle) but stays empty until Phase 12
+- No change to note-matching behavior — this phase is layout and visual identity only
+- **Verify:** the new shell renders correctly, existing practice functionality (note
+  matching, hand isolation, section practice, persistence) all still works exactly as
+  before within it
+
+### Phase 11 — Shared Current Key + Diatonic Transpose
+- One "current key" (tonic + mode) per piece that every later feature reads from —
+  changing it anywhere (e.g. via transpose) updates it everywhere (HUD, degree labels)
+- A proper **diatonic** transpose engine: shifts by scale degree and semitone together
+  so the key signature and every note's spelling stay musically correct in all 12 keys
+  (not a chromatic pitch-shift with a sharps/flats lookup table)
+- Transpose stepper (with a "next key" control) and the existing octave-strict toggle
+  live together in a per-piece practice-settings popover
+- **Verify:** user transposes a piece (e.g. Hanon No. 1) through several keys, confirms
+  correct key signature and enharmonic spelling each time, confirms note-matching still
+  works correctly against the transposed pitches
+
+### Phase 12 — Live Analysis HUD
+- Chord detection from currently-held MIDI notes (pitch-class-set matching against a
+  chord-quality template library — triads, sevenths, sus chords at minimum)
+- Detected chord mapped to a Roman numeral / scale degree via the current key
+- Circle-of-fifths widget highlighting the current key and the detected chord's
+  relative-major/minor wedge
+- Sustained-tone drone (extends the existing audio player) for practicing/improvising
+  against a fixed tonic
+- Ambient and passive: coexists with whatever's loaded on the left (a piece, or Free
+  Play), never takes over the practice loop the way a turn-based exercise would
+- **Verify:** user plays through a harmonically-rich piece (not a scale exercise —
+  chord detection needs actual harmony to read cleanly) and confirms the HUD's chord
+  name, Roman numeral, and circle-of-fifths highlight track what's being played
+
+### Phase 13 — Free Play
+- A blank-canvas mode with no piece loaded, entered from its own sidebar entry (not
+  the Follow/Tempo mode switcher, since those are two ways of playing a piece that's
+  already loaded and Free Play has none)
+- Shows what you're playing back at you in a basic form — exact fidelity (a simple
+  piano-roll-style view vs. real engraved notation from live input) is an open
+  decision to make when this phase is actually picked up, not before
+- Works with the HUD and drone from Phase 12, so you can improvise with the current
+  key/chord shown live
+- **Verify:** user opens Free Play, plays freely, sees their notes reflected back in
+  the chosen basic form, and (with the HUD open) sees live chord/degree feedback
+
+### Phase 14 — Generated Practice Drills
+- Scales & arpeggios and ii–V–I cycles, procedurally generated rather than loaded from
+  a file, fed through the existing wait-mode matching engine
+- Shares the key-stepper UI introduced in Phase 11 for cycling through all 12 keys
+- **Verify:** user opens a generated drill (e.g. a major scale), practices it in wait
+  mode, steps to the next key and confirms the drill regenerates correctly transposed
+
+### Phase 15 — Functional Ear Training
+- Turn-based exercise: plays a cadence establishing a key, then a note, and waits for
+  the user to identify or play back its scale degree
+- A separate turn-based loop, not the wait-mode cursor engine used elsewhere — it
+  drives the interaction rather than reacting to it, and can't run alongside reading a
+  piece the way the passive HUD can
+- **Verify:** user completes a round of functional ear training and confirms the
+  cadence/prompt/feedback loop behaves sensibly
+
+### Future (not yet scoped)
+- Adaptive sight-reading
+- Melodic/harmonic dictation
 
 ---
 

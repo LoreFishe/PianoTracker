@@ -1,4 +1,4 @@
-import { parseMxl } from "./mxl.js?v=20260727-1";
+import { parseMxl } from "./mxl.js?v=20260727-2";
 
 /** Reads an uploaded File (.musicxml/.xml/.mxl) and returns its MusicXML text. */
 export async function readUploadedFile(file) {
@@ -21,8 +21,11 @@ function formatDate(timestamp) {
   return new Date(timestamp).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 
-/** Renders the library list into `container`. Entries are sorted most-recently-updated first. */
-export function renderLibraryList(container, entries, { onOpen, onDelete }) {
+/** Renders the library list into `container` as compact sidebar nav items.
+ * Entries are sorted most-recently-updated first. `activeId` (if it matches
+ * an entry) gets the highlighted/open styling instead of a fixed "Practice"
+ * button, since the sidebar is always visible alongside whatever's open. */
+export function renderLibraryList(container, entries, { activeId = null, onOpen, onDelete }) {
   container.innerHTML = "";
 
   if (entries.length === 0) {
@@ -38,39 +41,39 @@ export function renderLibraryList(container, entries, { onOpen, onDelete }) {
   for (const entry of sorted) {
     const item = document.createElement("li");
     item.className = "library-item";
+    item.classList.toggle("active", entry.id === activeId);
 
-    const info = document.createElement("div");
-    info.className = "library-item-info";
-    const title = document.createElement("div");
+    const glyph = document.createElement("span");
+    glyph.className = "glyph";
+    glyph.textContent = "♪";
+
+    const text = document.createElement("span");
+    text.className = "library-item-text";
+    const title = document.createElement("span");
     title.className = "library-item-title";
     title.textContent = entry.fileName;
-    const meta = document.createElement("div");
+    const meta = document.createElement("span");
     meta.className = "library-item-meta";
     meta.textContent = `${formatProgressSummary(entry)} · Updated ${formatDate(entry.updatedAt)}`;
-    info.appendChild(title);
-    info.appendChild(meta);
-
-    const actions = document.createElement("div");
-    actions.className = "library-item-actions";
-
-    const openButton = document.createElement("button");
-    openButton.textContent = "Practice";
-    openButton.addEventListener("click", () => onOpen(entry.id));
+    text.appendChild(title);
+    text.appendChild(meta);
 
     const deleteButton = document.createElement("button");
-    deleteButton.textContent = "Delete";
-    deleteButton.className = "danger";
-    deleteButton.addEventListener("click", () => {
+    deleteButton.className = "library-item-delete";
+    deleteButton.type = "button";
+    deleteButton.title = `Delete "${entry.fileName}"`;
+    deleteButton.textContent = "✕";
+    deleteButton.addEventListener("click", (event) => {
+      event.stopPropagation();
       if (confirm(`Delete "${entry.fileName}"? This can't be undone.`)) {
         onDelete(entry.id);
       }
     });
 
-    actions.appendChild(openButton);
-    actions.appendChild(deleteButton);
-
-    item.appendChild(info);
-    item.appendChild(actions);
+    item.appendChild(glyph);
+    item.appendChild(text);
+    item.appendChild(deleteButton);
+    item.addEventListener("click", () => onOpen(entry.id));
     container.appendChild(item);
   }
 }

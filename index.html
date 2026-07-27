@@ -3,16 +3,55 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Piano Practice Tracker</title>
+  <title>Tonic</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,500&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="css/styles.css">
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/opensheetmusicdisplay@2.0.0/build/opensheetmusicdisplay.min.js"></script>
 </head>
 <body>
-  <main id="app">
-    <h1>Piano Practice Tracker</h1>
+  <div id="app" class="app">
+    <!-- ===================== TOP BAR ===================== -->
+    <div class="topbar">
+      <div class="wordmark" id="wordmark" title="Back to home">
+        <svg class="disc" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.4"/>
+          <circle cx="12" cy="12" r="3.4" fill="currentColor"/>
+          <line x1="12" y1="2.4" x2="12" y2="6" stroke="currentColor" stroke-width="1.2"/>
+          <line x1="12" y1="18" x2="12" y2="21.6" stroke="currentColor" stroke-width="1.2"/>
+          <line x1="2.4" y1="12" x2="6" y2="12" stroke="currentColor" stroke-width="1.2"/>
+          <line x1="18" y1="12" x2="21.6" y2="12" stroke="currentColor" stroke-width="1.2"/>
+        </svg>
+        <span class="name">Tonic</span>
+      </div>
 
-    <section id="library-view">
+      <div class="modes" role="radiogroup" aria-label="Practice mode">
+        <button type="button" class="mode active" data-mode="follow">Follow</button>
+        <button type="button" class="mode" data-mode="tempo" disabled title="Coming in a later phase">Tempo</button>
+      </div>
+
+      <div class="spacer"></div>
+
+      <div class="keypill" id="key-pill" hidden>
+        <span class="lbl">Key</span>
+        <span class="dot"></span>
+        <span id="key-pill-label"></span>
+      </div>
+      <button type="button" class="icon-btn" id="hud-toggle" title="Toggle analysis panel" aria-pressed="false">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" stroke-width="1.3"/><line x1="10" y1="2.5" x2="10" y2="13.5" stroke="currentColor" stroke-width="1.3"/></svg>
+      </button>
+    </div>
+
+    <!-- ===================== SIDEBAR ===================== -->
+    <div class="sidebar">
+      <button type="button" class="nav-item free-play" id="free-play-nav">
+        <span class="glyph">&#9679;</span>
+        <span>Free play</span>
+      </button>
+
+      <div class="nav-h">Library</div>
       <div id="library-controls">
         <label class="upload-button">
           Upload a piece
@@ -21,43 +60,102 @@
         <span id="upload-error" hidden></span>
       </div>
       <ul id="library-list"></ul>
-    </section>
 
-    <section id="practice-view" hidden>
-      <button id="back-to-library" type="button">&larr; Back to library</button>
-      <h2 id="practice-title"></h2>
+      <div class="nav-h">Learning tools</div>
+      <div class="nav-item tool inert" title="Coming in a later phase">
+        <span class="glyph">&#9671;</span>
+        <span>Scales &amp; arpeggios<span class="sub">All 12 keys</span></span>
+        <span class="badge-soon">Soon</span>
+      </div>
+      <div class="nav-item tool inert" title="Coming in a later phase">
+        <span class="glyph">&#9671;</span>
+        <span>ii&ndash;V&ndash;I cycles<span class="sub">Circle of fifths</span></span>
+        <span class="badge-soon">Soon</span>
+      </div>
+      <div class="nav-item tool inert" title="Coming in a later phase">
+        <span class="glyph">&#9672;</span>
+        <span>Functional ear training<span class="sub">Hear the degree</span></span>
+        <span class="badge-soon">Soon</span>
+      </div>
+      <div class="nav-item tool inert" title="Coming in a later phase">
+        <span class="glyph">&#9671;</span>
+        <span>Sight-reading<span class="sub">Adaptive</span></span>
+        <span class="badge-soon">Soon</span>
+      </div>
 
-      <section id="settings">
-        <label>
-          <input type="checkbox" id="octave-strict-toggle" checked>
-          Octave-strict matching
-        </label>
+      <div class="sidebar-spacer"></div>
 
-        <div id="hand-mode-control" role="radiogroup" aria-label="Hand practice mode">
-          <button type="button" class="hand-mode-button" data-hand-mode="both">Both hands</button>
-          <button type="button" class="hand-mode-button" data-hand-mode="right">Right hand only</button>
-          <button type="button" class="hand-mode-button" data-hand-mode="left">Left hand only</button>
+      <details id="midi-debug">
+        <summary>MIDI Debug</summary>
+        <p id="midi-status">Requesting MIDI access&hellip;</p>
+        <ul id="midi-log"></ul>
+      </details>
+    </div>
+
+    <!-- ===================== MAIN ===================== -->
+    <div class="main">
+      <div id="main-welcome" class="main-panel">
+        <div class="welcome-copy">
+          <h2>Welcome to Tonic</h2>
+          <p>Pick a piece from the library, or start Free play, to begin.</p>
+        </div>
+      </div>
+
+      <div id="main-freeplay" class="main-panel" hidden>
+        <div class="welcome-copy">
+          <h2>Free play</h2>
+          <p>Coming soon &mdash; a blank canvas that shows you what you just played.</p>
+        </div>
+      </div>
+
+      <div id="main-practice" class="main-panel" hidden>
+        <div class="piece-head">
+          <div class="title">
+            <h2 id="practice-title"></h2>
+          </div>
         </div>
 
-        <button id="select-section-button" type="button">Practice a section&hellip;</button>
-        <button id="exit-section-button" type="button" hidden>Exit section &mdash; practice full piece</button>
-        <button id="save-section-button" type="button" hidden>Save this section&hellip;</button>
-        <button id="play-button" type="button">&#9654; Play</button>
-      </section>
+        <section id="settings">
+          <label class="settings-toggle">
+            <input type="checkbox" id="octave-strict-toggle" checked>
+            Octave-strict matching
+          </label>
 
-      <p id="section-instructions" hidden></p>
-      <div id="saved-sections-list"></div>
+          <div id="hand-mode-control" role="radiogroup" aria-label="Hand practice mode">
+            <button type="button" class="hand-mode-button" data-hand-mode="both">Both hands</button>
+            <button type="button" class="hand-mode-button" data-hand-mode="right">Right hand only</button>
+            <button type="button" class="hand-mode-button" data-hand-mode="left">Left hand only</button>
+          </div>
 
-      <div id="osmd-container"></div>
-      <p id="expected-notes">Loading score&hellip;</p>
-    </section>
+          <button id="select-section-button" type="button">Practice a section&hellip;</button>
+          <button id="exit-section-button" type="button" hidden>Exit section &mdash; practice full piece</button>
+          <button id="save-section-button" type="button" hidden>Save this section&hellip;</button>
+          <button id="play-button" type="button">&#9654; Play</button>
+        </section>
 
-    <details id="midi-debug">
-      <summary>MIDI Debug</summary>
-      <p id="midi-status">Requesting MIDI access&hellip;</p>
-      <ul id="midi-log"></ul>
-    </details>
-  </main>
-  <script type="module" src="js/main.js?v=20260727-1"></script>
+        <p id="section-instructions" hidden></p>
+        <div id="saved-sections-list"></div>
+
+        <div id="osmd-container"></div>
+        <p id="expected-notes">Loading score&hellip;</p>
+      </div>
+    </div>
+
+    <!-- ===================== HUD ===================== -->
+    <div class="hud" id="hud" hidden>
+      <div class="hud-head">
+        <div>
+          <div class="eyebrow">Meaning &middot; ear</div>
+          <h3>Live analysis</h3>
+        </div>
+        <button type="button" class="close" id="hud-close" aria-label="Close analysis panel">&times;</button>
+      </div>
+      <div class="hud-body">
+        <p class="hud-placeholder">Chord and key analysis is coming in a later phase.</p>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="js/main.js?v=20260727-2"></script>
 </body>
 </html>

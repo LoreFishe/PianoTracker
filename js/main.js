@@ -2,15 +2,15 @@
 // cache lifetime, combined with browsers not always revalidating on a plain
 // reload, has repeatedly served stale JS after a deploy in testing. Bump
 // this string (e.g. to today's date) whenever you deploy a real change.
-import { initMidi, midiNoteToName } from "./midi.js?v=20260727-1";
+import { initMidi, midiNoteToName } from "./midi.js?v=20260727-2";
 import {
   NoteMatcher,
   getStaffPositionForNote,
   getNotePixelPosition,
   walkPiece,
   extractPlaybackNotes,
-} from "./matching.js?v=20260727-1";
-import { Player } from "./playback.js?v=20260727-1";
+} from "./matching.js?v=20260727-2";
+import { Player } from "./playback.js?v=20260727-2";
 import {
   putFileContent,
   getFileContent,
@@ -20,8 +20,8 @@ import {
   getProgress,
   getAllProgress,
   deleteProgress,
-} from "./db.js?v=20260727-1";
-import { renderLibraryList, readUploadedFile } from "./library.js?v=20260727-1";
+} from "./db.js?v=20260727-2";
+import { renderLibraryList, readUploadedFile } from "./library.js?v=20260727-2";
 
 const SAMPLE_FILE_URL = "samples/sample-grand-staff.musicxml";
 const SAMPLE_FILE_NAME = "Sample Grand Staff Exercise.musicxml";
@@ -37,8 +37,15 @@ let osmdInstance = null;
 let currentEntry = null;
 let heldNoteMarkers = new Map(); // midi -> isCorrect, for notes currently held down
 
-const libraryView = document.getElementById("library-view");
-const practiceView = document.getElementById("practice-view");
+const appEl = document.getElementById("app");
+const mainWelcome = document.getElementById("main-welcome");
+const mainFreeplay = document.getElementById("main-freeplay");
+const mainPractice = document.getElementById("main-practice");
+const hudEl = document.getElementById("hud");
+const hudToggle = document.getElementById("hud-toggle");
+const hudClose = document.getElementById("hud-close");
+const wordmark = document.getElementById("wordmark");
+const freePlayNav = document.getElementById("free-play-nav");
 const libraryList = document.getElementById("library-list");
 const fileUpload = document.getElementById("file-upload");
 const uploadError = document.getElementById("upload-error");
@@ -71,20 +78,23 @@ let pieceNoteCache = [];
 let measureZones = [];
 let measureSystems = []; // measureZones grouped by line, for multi-line range highlighting
 
-function showLibraryView() {
-  player.stop();
-  updatePlayButtonLabel();
-  matcher = null;
-  osmdInstance = null;
-  currentEntry = null;
-  practiceView.hidden = true;
-  libraryView.hidden = false;
-  refreshLibraryList();
-}
+const MAIN_PANELS = { welcome: mainWelcome, freeplay: mainFreeplay, practice: mainPractice };
 
-function showPracticeView() {
-  libraryView.hidden = true;
-  practiceView.hidden = false;
+// The sidebar (library + learning tools) stays mounted at all times; only the
+// content inside `.main` swaps. Leaving "practice" always tears down the
+// current piece's matcher/player state first, whichever panel comes next.
+function setMainView(view) {
+  if (MAIN_PANELS.practice !== MAIN_PANELS[view]) {
+    player.stop();
+    updatePlayButtonLabel();
+    matcher = null;
+    osmdInstance = null;
+    currentEntry = null;
+  }
+  for (const [key, panel] of Object.entries(MAIN_PANELS)) {
+    panel.hidden = key !== view;
+  }
+  refreshLibraryList();
 }
 
 const DEFAULT_SETTINGS = { octaveStrict: true, handMode: "both" };
@@ -119,10 +129,12 @@ async function getLibraryEntries() {
 async function refreshLibraryList() {
   const entries = await getLibraryEntries();
   renderLibraryList(libraryList, entries, {
+    activeId: currentEntry?.id ?? null,
     onOpen: openPiece,
     onDelete: async (id) => {
       await Promise.all([deleteFileContent(id), deleteProgress(id)]);
-      refreshLibraryList();
+      if (currentEntry?.id === id) setMainView("welcome");
+      else refreshLibraryList();
     },
   });
 }
@@ -774,7 +786,7 @@ async function openPiece(id) {
   const progress = { ...defaultProgress(), ...progressRecord?.progress };
   currentEntry = { id, fileName: fileContent.fileName, settings, progress };
 
-  showPracticeView();
+  setMainView("practice");
   document.getElementById("practice-title").textContent = fileContent.fileName;
 
   const container = document.getElementById("osmd-container");
@@ -854,7 +866,22 @@ for (const button of handModeButtons) {
   });
 }
 
-document.getElementById("back-to-library").addEventListener("click", showLibraryView);
+wordmark.addEventListener("click", () => setMainView("welcome"));
+freePlayNav.addEventListener("click", () => setMainView("freeplay"));
+
+hudToggle.addEventListener("click", () => {
+  const open = appEl.classList.toggle("hud-open");
+  hudEl.hidden = !open;
+  hudToggle.classList.toggle("on", open);
+  hudToggle.setAttribute("aria-pressed", String(open));
+});
+
+hudClose.addEventListener("click", () => {
+  appEl.classList.remove("hud-open");
+  hudEl.hidden = true;
+  hudToggle.classList.remove("on");
+  hudToggle.setAttribute("aria-pressed", "false");
+});
 
 fileUpload.addEventListener("change", async () => {
   const file = fileUpload.files[0];
