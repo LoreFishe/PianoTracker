@@ -263,35 +263,76 @@ function buildPieceNoteCache(osmd) {
   return cache;
 }
 
-// One zone per measure (first/last step, horizontal center, vertical position),
-// derived from the note cache. Section-boundary clicks snap to whichever
-// measure they're nearest to rather than requiring a pixel-precise note hit —
-// this is what lets clicking near a barline work as well as clicking a note,
-// and incidentally makes it much harder to accidentally select a near-empty
-// section from an imprecise click.
+const SYSTEM_Y_CLUSTER_THRESHOLD = 50; // px; groups measures on the same line together
+
+// One zone per measure (step range, X extent, average Y), derived from the
+// note cache. Section-boundary clicks snap to whichever measure they land
+// in rather than requiring a pixel-precise note hit — this is what lets
+// clicking near a barline work as well as clicking a note, and incidentally
+// makes it much harder to accidentally select a near-empty section from an
+// imprecise click. Each zone's clickable X range is bounded by the *gaps* to
+// its neighbors on the same line (not by nearest-center distance) so the
+// decision boundary sits at the actual barline, not skewed toward whichever
+// neighboring measure happens to have a wider spread of notes.
 function buildMeasureZones(cache) {
   const byMeasure = new Map();
   for (const entry of cache) {
     if (entry.x == null || entry.y == null) continue;
     let zone = byMeasure.get(entry.measureNumber);
     if (!zone) {
-      zone = { firstStep: entry.stepIndex, lastStep: entry.stepIndex, minX: entry.x, maxX: entry.x, y: entry.y };
+      zone = { firstStep: entry.stepIndex, lastStep: entry.stepIndex, minX: entry.x, maxX: entry.x, ySum: 0, yCount: 0 };
       byMeasure.set(entry.measureNumber, zone);
     }
     zone.firstStep = Math.min(zone.firstStep, entry.stepIndex);
     zone.lastStep = Math.max(zone.lastStep, entry.stepIndex);
     zone.minX = Math.min(zone.minX, entry.x);
     zone.maxX = Math.max(zone.maxX, entry.x);
+    zone.ySum += entry.y;
+    zone.yCount += 1;
   }
-  return Array.from(byMeasure.values());
+  const zones = Array.from(byMeasure.values()).map((z) => ({ ...z, y: z.ySum / z.yCount }));
+
+  const systems = [];
+  for (const zone of zones.sort((a, b) => a.firstStep - b.firstStep)) {
+    const system = systems.find((s) => Math.abs(s[0].y - zone.y) < SYSTEM_Y_CLUSTER_THRESHOLD);
+    if (system) system.push(zone);
+    else systems.push([zone]);
+  }
+  for (const system of systems) {
+    system.sort((a, b) => a.minX - b.minX);
+    system.forEach((zone, i) => {
+      const prev = system[i - 1];
+      const next = system[i + 1];
+      zone.leftBound = prev ? (prev.maxX + zone.minX) / 2 : -Infinity;
+      zone.rightBound = next ? (zone.maxX + next.minX) / 2 : Infinity;
+    });
+  }
+  return zones;
 }
 
 function findNearestMeasureZone(zones, x, y) {
+  if (zones.length === 0) return null;
+
+  let nearestY = zones[0].y;
+  let bestYDist = Infinity;
+  for (const zone of zones) {
+    const dist = Math.abs(zone.y - y);
+    if (dist < bestYDist) {
+      bestYDist = dist;
+      nearestY = zone.y;
+    }
+  }
+  const onThisLine = zones.filter((z) => Math.abs(z.y - nearestY) < SYSTEM_Y_CLUSTER_THRESHOLD);
+
+  const containing = onThisLine.find((z) => x >= z.leftBound && x < z.rightBound);
+  if (containing) return containing;
+
+  // Fallback (shouldn't normally hit, since bounds are -Infinity..Infinity
+  // at the ends of each line): nearest center on the same line.
   let best = null;
   let bestDist = Infinity;
-  for (const zone of zones) {
-    const centerX = (zone.minX + zone.maxX) / 2;
-    const dist = (centerX - x) ** 2 + (zone.y - y) ** 2;
+  for (const zone of onThisLine) {
+    const dist = Math.abs((zone.minX + zone.maxX) / 2 - x);
     if (dist < bestDist) {
       bestDist = dist;
       best = zone;
