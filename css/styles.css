@@ -529,6 +529,7 @@ button {
 }
 
 .piece-head {
+  position: relative;
   display: flex;
   align-items: flex-start;
   gap: 14px;
@@ -547,6 +548,206 @@ button {
   color: var(--ivory);
   letter-spacing: 0.2px;
   margin: 0;
+}
+
+.gear {
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border-radius: 9px;
+  border: 1px solid rgba(203, 161, 82, 0.4);
+  background: rgba(203, 161, 82, 0.09);
+  display: grid;
+  place-items: center;
+  color: var(--brass);
+  cursor: pointer;
+}
+
+.gear:hover {
+  background: rgba(203, 161, 82, 0.16);
+}
+
+/* ---------- SETTINGS POPOVER ---------- */
+.popover {
+  position: absolute;
+  top: 64px;
+  right: 22px;
+  z-index: 5;
+  width: 262px;
+  background: #20243c;
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+  padding: 15px 15px 16px;
+  box-shadow: 0 24px 50px -18px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+.popover::before {
+  content: "";
+  position: absolute;
+  top: -7px;
+  right: 12px;
+  width: 12px;
+  height: 12px;
+  background: #20243c;
+  border-left: 1px solid var(--hair);
+  border-top: 1px solid var(--hair);
+  transform: rotate(45deg);
+}
+
+.popover h4 {
+  font-family: 'Fraunces', serif;
+  font-weight: 500;
+  font-size: 14px;
+  color: var(--ivory);
+  margin: 0 0 2px;
+}
+
+.popover .sub {
+  font-size: 11px;
+  color: var(--muted-2);
+  margin-bottom: 14px;
+}
+
+.po-row {
+  padding: 11px 0;
+  border-top: 1px solid var(--hair-2);
+}
+
+.po-row:first-of-type {
+  border-top: none;
+  padding-top: 0;
+}
+
+.po-row .rlabel {
+  font-size: 12.5px;
+  color: var(--txt);
+  font-weight: 500;
+  margin-bottom: 8px;
+  display: flex;
+  justify-content: space-between;
+}
+
+.po-row .rlabel .hint {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  color: var(--muted-2);
+  font-weight: 400;
+}
+
+.stepper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.stepper .arrow {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  border: 1px solid var(--hair);
+  background: var(--rosewood);
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 15px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.stepper .arrow:hover {
+  background: var(--rosewood-3);
+  color: var(--txt);
+}
+
+.stepper .cur {
+  flex: 1;
+  text-align: center;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 13px;
+  color: var(--brass);
+  background: rgba(203, 161, 82, 0.09);
+  border: 1px solid rgba(203, 161, 82, 0.35);
+  border-radius: 7px;
+  padding: 5px 0;
+  letter-spacing: 0.04em;
+}
+
+.po-note {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9.5px;
+  color: var(--muted-2);
+  margin-top: 7px;
+  letter-spacing: 0.03em;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.toggle-row .t-txt .t-title {
+  font-size: 12.5px;
+  color: var(--txt);
+  font-weight: 500;
+}
+
+.toggle-row .t-txt .t-sub {
+  font-size: 10.5px;
+  color: var(--muted-2);
+  margin-top: 2px;
+  max-width: 150px;
+}
+
+.switch {
+  display: inline-block;
+  width: 38px;
+  height: 22px;
+  flex: none;
+  position: relative;
+  cursor: pointer;
+}
+
+.switch input {
+  position: absolute;
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  cursor: pointer;
+}
+
+.switch::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 12px;
+  background: var(--rosewood-3);
+  border: 1px solid var(--hair);
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: left 0.15s ease, background-color 0.15s ease;
+}
+
+.switch:has(input:checked)::before {
+  background: rgba(67, 179, 162, 0.3);
+  border-color: rgba(67, 179, 162, 0.5);
+}
+
+.switch:has(input:checked)::after {
+  left: 18px;
+  background: var(--verdigris);
 }
 
 #settings {

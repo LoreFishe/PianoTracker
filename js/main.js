@@ -2,15 +2,15 @@
 // cache lifetime, combined with browsers not always revalidating on a plain
 // reload, has repeatedly served stale JS after a deploy in testing. Bump
 // this string (e.g. to today's date) whenever you deploy a real change.
-import { initMidi, midiNoteToName } from "./midi.js?v=20260727-2";
+import { initMidi, midiNoteToName } from "./midi.js?v=20260727-3";
 import {
   NoteMatcher,
   getStaffPositionForNote,
   getNotePixelPosition,
   walkPiece,
   extractPlaybackNotes,
-} from "./matching.js?v=20260727-2";
-import { Player } from "./playback.js?v=20260727-2";
+} from "./matching.js?v=20260727-3";
+import { Player } from "./playback.js?v=20260727-3";
 import {
   putFileContent,
   getFileContent,
@@ -20,8 +20,9 @@ import {
   getProgress,
   getAllProgress,
   deleteProgress,
-} from "./db.js?v=20260727-2";
-import { renderLibraryList, readUploadedFile } from "./library.js?v=20260727-2";
+} from "./db.js?v=20260727-3";
+import { renderLibraryList, readUploadedFile } from "./library.js?v=20260727-3";
+import { transposeMusicXml, detectSourceKey, describeTargetKey } from "./transpose.js?v=20260727-3";
 
 const SAMPLE_FILE_URL = "samples/sample-grand-staff.musicxml";
 const SAMPLE_FILE_NAME = "Sample Grand Staff Exercise.musicxml";
@@ -58,8 +59,22 @@ const savedSectionsList = document.getElementById("saved-sections-list");
 const sectionInstructions = document.getElementById("section-instructions");
 const osmdContainer = document.getElementById("osmd-container");
 const playButton = document.getElementById("play-button");
+const keyPill = document.getElementById("key-pill");
+const keyPillLabel = document.getElementById("key-pill-label");
+const settingsGear = document.getElementById("settings-gear");
+const settingsPopover = document.getElementById("settings-popover");
+const settingsPopoverSubtitle = document.getElementById("settings-popover-subtitle");
+const transposePrev = document.getElementById("transpose-prev");
+const transposeNext = document.getElementById("transpose-next");
+const transposeCurrent = document.getElementById("transpose-current");
 
 const player = new Player();
+
+// The piece's original (untransposed) key, detected once per load, and the
+// currently-effective key after applying the piece's transposeSemitones
+// setting — the single "current key" later phases (the HUD) will read from.
+let sourceKeyInfo = null;
+let effectiveKeyInfo = null;
 
 // Section-practice click-to-select state. `sectionSelectionState` is null
 // (idle), "awaiting-start", or "awaiting-end". `preSectionPosition` is the
@@ -90,6 +105,11 @@ function setMainView(view) {
     matcher = null;
     osmdInstance = null;
     currentEntry = null;
+    sourceKeyInfo = null;
+    effectiveKeyInfo = null;
+    keyPill.hidden = true;
+    settingsPopover.hidden = true;
+    settingsGear.setAttribute("aria-expanded", "false");
   }
   for (const [key, panel] of Object.entries(MAIN_PANELS)) {
     panel.hidden = key !== view;
@@ -97,7 +117,7 @@ function setMainView(view) {
   refreshLibraryList();
 }
 
-const DEFAULT_SETTINGS = { octaveStrict: true, handMode: "both" };
+const DEFAULT_SETTINGS = { octaveStrict: true, handMode: "both", transposeSemitones: 0 };
 // A function, not a shared object constant: savedSections is an array, and a
 // shared default would mean every piece's "empty" progress pushes into the
 // *same* array reference the moment one piece saves a section.
@@ -109,6 +129,36 @@ function setHandModeButtonsActive(mode) {
   for (const button of handModeButtons) {
     button.classList.toggle("active", button.dataset.handMode === mode);
   }
+}
+
+function updateTransposeStepperLabel() {
+  if (!currentEntry || !effectiveKeyInfo) return;
+  transposeCurrent.textContent = effectiveKeyInfo.name;
+  settingsPopoverSubtitle.textContent = currentEntry.fileName;
+}
+
+// Persists the new transpose setting, then fully reloads the piece — the same
+// path openPiece already uses, so the note cache/matcher/section zones are
+// rebuilt fresh against the new pitches. Resuming mid-piece across a key
+// change wouldn't make sense anyway (pieces already always start at the
+// beginning on open). Awaits the write directly, rather than the fire-and-
+// forget saveCurrentEntry(), since firing the reload before the write lands
+// would race the very setting it's about to re-read.
+async function setTransposeSemitones(newValue) {
+  if (!currentEntry) return;
+  currentEntry.settings.transposeSemitones = ((newValue % 12) + 12) % 12;
+  currentEntry.updatedAt = Date.now();
+  try {
+    await putProgress({
+      id: currentEntry.id,
+      settings: currentEntry.settings,
+      progress: currentEntry.progress,
+      updatedAt: currentEntry.updatedAt,
+    });
+  } catch (err) {
+    console.error("Failed to save progress:", err);
+  }
+  await openPiece(currentEntry.id);
 }
 
 async function getLibraryEntries() {
@@ -811,7 +861,17 @@ async function openPiece(id) {
     });
     osmdInstance = osmd;
 
-    await osmd.load(fileContent.musicXmlText);
+    const parsedDoc = new DOMParser().parseFromString(fileContent.musicXmlText, "application/xml");
+    sourceKeyInfo = detectSourceKey(parsedDoc);
+    effectiveKeyInfo = describeTargetKey(sourceKeyInfo, currentEntry.settings.transposeSemitones);
+    keyPill.hidden = false;
+    keyPillLabel.textContent = effectiveKeyInfo.name;
+    updateTransposeStepperLabel();
+
+    const scoreToLoad = currentEntry.settings.transposeSemitones
+      ? transposeMusicXml(fileContent.musicXmlText, currentEntry.settings.transposeSemitones)
+      : fileContent.musicXmlText;
+    await osmd.load(scoreToLoad);
     osmd.render();
     pieceNoteCache = buildPieceNoteCache(osmd);
     ({ zones: measureZones, systems: measureSystems } = buildMeasureZones(pieceNoteCache, osmd));
@@ -850,6 +910,28 @@ octaveStrictToggle.addEventListener("change", () => {
     currentEntry.settings.octaveStrict = octaveStrictToggle.checked;
     saveCurrentEntry();
   }
+});
+
+settingsGear.addEventListener("click", (event) => {
+  event.stopPropagation();
+  const open = settingsPopover.hidden;
+  settingsPopover.hidden = !open;
+  settingsGear.setAttribute("aria-expanded", String(open));
+});
+
+document.addEventListener("click", (event) => {
+  if (settingsPopover.hidden) return;
+  if (settingsPopover.contains(event.target) || settingsGear.contains(event.target)) return;
+  settingsPopover.hidden = true;
+  settingsGear.setAttribute("aria-expanded", "false");
+});
+
+transposePrev.addEventListener("click", () => {
+  if (currentEntry) setTransposeSemitones(currentEntry.settings.transposeSemitones - 1);
+});
+
+transposeNext.addEventListener("click", () => {
+  if (currentEntry) setTransposeSemitones(currentEntry.settings.transposeSemitones + 1);
 });
 
 for (const button of handModeButtons) {

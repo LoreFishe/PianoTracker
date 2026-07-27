@@ -1,4 +1,4 @@
-import { parseMxl } from "./mxl.js?v=20260727-2";
+import { parseMxl } from "./mxl.js?v=20260727-3";
 
 /** Reads an uploaded File (.musicxml/.xml/.mxl) and returns its MusicXML text. */
 export async function readUploadedFile(file) {
