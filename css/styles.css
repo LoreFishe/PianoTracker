@@ -1009,13 +1009,234 @@ button {
 }
 
 .hud-body {
-  padding: 16px;
+  padding: 0 0 16px;
 }
 
 .hud-placeholder {
   color: var(--muted-2);
   font-size: 13px;
   line-height: 1.5;
+  padding: 16px;
+}
+
+/* ---------- circle of fifths ---------- */
+.cof-wrap {
+  padding: 16px 16px 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.cof-wrap svg {
+  width: 190px;
+  height: 190px;
+}
+
+.cof-major-labels text {
+  fill: var(--muted);
+  transition: fill 0.15s ease;
+}
+
+.cof-minor-labels text {
+  fill: var(--muted-2);
+  transition: fill 0.15s ease;
+}
+
+.cof-major-labels text.cof-is-key,
+.cof-minor-labels text.cof-is-key {
+  fill: var(--brass);
+  font-weight: 600;
+}
+
+.cof-major-labels text.cof-is-chord,
+.cof-minor-labels text.cof-is-chord {
+  fill: var(--verdigris);
+  font-weight: 600;
+}
+
+.cof-key-highlight,
+.cof-chord-highlight {
+  fill: transparent;
+  transition: fill 0.15s ease, cx 0.15s ease, cy 0.15s ease;
+}
+
+.cof-key-highlight.cof-active {
+  fill: rgba(203, 161, 82, 0.14);
+}
+
+.cof-chord-highlight.cof-active {
+  fill: rgba(67, 179, 162, 0.14);
+}
+
+.cof-center-label {
+  fill: var(--muted);
+}
+
+.cof-center-key {
+  fill: var(--brass);
+}
+
+.cof-caption {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  color: var(--muted-2);
+  letter-spacing: 0.06em;
+  margin-top: 2px;
+  text-align: center;
+}
+
+/* ---------- now playing / degree chips ---------- */
+.section {
+  padding: 14px 16px;
+  border-top: 1px solid var(--hair);
+}
+
+.section .s-lbl {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted-2);
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.section .s-lbl .live {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--verdigris);
+}
+
+.chord-name {
+  font-family: 'Fraunces', serif;
+  font-weight: 600;
+  font-size: 32px;
+  color: var(--ivory);
+  line-height: 1;
+  min-height: 38px;
+}
+
+.chord-fn {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 13px;
+  color: var(--brass);
+  margin-top: 6px;
+  letter-spacing: 0.04em;
+  min-height: 16px;
+}
+
+.chord-fn .in {
+  color: var(--muted);
+}
+
+.degchips {
+  display: flex;
+  gap: 6px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.degchip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  background: var(--rosewood-2);
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+  padding: 6px 0;
+  width: 48px;
+}
+
+.degchip .deg {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 13px;
+  color: var(--verdigris);
+  font-weight: 600;
+}
+
+.degchip .nn {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.degchip.tonic {
+  border-color: rgba(203, 161, 82, 0.45);
+  background: rgba(203, 161, 82, 0.09);
+}
+
+.degchip.tonic .deg {
+  color: var(--brass);
+}
+
+/* ---------- drone ---------- */
+.drone-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.drone-pill {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  background: rgba(67, 179, 162, 0.09);
+  border: 1px solid rgba(67, 179, 162, 0.35);
+  border-radius: 9px;
+  padding: 9px 13px;
+  cursor: pointer;
+  color: inherit;
+}
+
+.drone-pill:hover {
+  background: rgba(67, 179, 162, 0.16);
+}
+
+.drone-pill .note {
+  font-family: 'Fraunces', serif;
+  font-weight: 600;
+  font-size: 18px;
+  color: var(--verdigris);
+}
+
+.drone-pill .wave {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 16px;
+}
+
+.drone-pill .wave i {
+  width: 2.5px;
+  height: 4px;
+  background: var(--verdigris);
+  border-radius: 2px;
+  opacity: 0.35;
+}
+
+.drone-pill[aria-pressed="true"] .wave i {
+  opacity: 0.85;
+  animation: drone-wave 0.9s ease-in-out infinite;
+}
+
+.drone-pill .wave i:nth-child(1) { animation-delay: 0s; }
+.drone-pill .wave i:nth-child(2) { animation-delay: 0.12s; }
+.drone-pill .wave i:nth-child(3) { animation-delay: 0.24s; }
+.drone-pill .wave i:nth-child(4) { animation-delay: 0.36s; }
+.drone-pill .wave i:nth-child(5) { animation-delay: 0.48s; }
+
+@keyframes drone-wave {
+  0%, 100% { height: 4px; }
+  50% { height: 16px; }
+}
+
+.drone-volume {
+  flex: 1;
+  accent-color: var(--verdigris);
 }
 
 @media (max-width: 900px) {

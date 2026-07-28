@@ -52,6 +52,14 @@ function pitchClassOf(step, alter) {
   return ((STEP_SEMITONES[step] + alter) % 12 + 12) % 12;
 }
 
+/** Canonical key name for a pitch class + mode (e.g. "E♭" for pitch class 3,
+ * major) — the same spelling used for the key pill and transpose stepper,
+ * reused by the circle-of-fifths widget so its labels never drift out of
+ * sync with a second, independent spelling table. */
+export function keyName(pitchClass, mode) {
+  return keyTableForMode(mode)[((pitchClass % 12) + 12) % 12].name;
+}
+
 /** Reads the first <attributes><key> in a MusicXML document (fifths + mode).
  * Defaults to C major if the document has none — a malformed or unusual file
  * shouldn't crash the transpose engine, just fall back sanely. */

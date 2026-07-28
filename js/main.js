@@ -2,15 +2,15 @@
 // cache lifetime, combined with browsers not always revalidating on a plain
 // reload, has repeatedly served stale JS after a deploy in testing. Bump
 // this string (e.g. to today's date) whenever you deploy a real change.
-import { initMidi, midiNoteToName } from "./midi.js?v=20260727-10";
+import { initMidi, midiNoteToName } from "./midi.js?v=20260727-11";
 import {
   NoteMatcher,
   getStaffPositionForNote,
   getNotePixelPosition,
   walkPiece,
   extractPlaybackNotes,
-} from "./matching.js?v=20260727-10";
-import { Player } from "./playback.js?v=20260727-10";
+} from "./matching.js?v=20260727-11";
+import { Player } from "./playback.js?v=20260727-11";
 import {
   putFileContent,
   getFileContent,
@@ -20,9 +20,10 @@ import {
   getProgress,
   getAllProgress,
   deleteProgress,
-} from "./db.js?v=20260727-10";
-import { renderLibraryList, readUploadedFile } from "./library.js?v=20260727-10";
-import { transposeMusicXml, detectSourceKey, describeTargetKey } from "./transpose.js?v=20260727-10";
+} from "./db.js?v=20260727-11";
+import { renderLibraryList, readUploadedFile } from "./library.js?v=20260727-11";
+import { transposeMusicXml, detectSourceKey, describeTargetKey, keyName } from "./transpose.js?v=20260727-11";
+import { detectChord, describeChordInKey, degreeLabel, pitchClassName, isMinorQuality } from "./chords.js?v=20260727-11";
 
 const SAMPLE_FILE_URL = "samples/sample-grand-staff.musicxml";
 const SAMPLE_FILE_NAME = "Sample Grand Staff Exercise.musicxml";
@@ -68,8 +69,34 @@ const transposePrev = document.getElementById("transpose-prev");
 const transposeNext = document.getElementById("transpose-next");
 const transposeCurrent = document.getElementById("transpose-current");
 const transposeReset = document.getElementById("transpose-reset");
+const hudPlaceholder = document.getElementById("hud-placeholder");
+const hudContent = document.getElementById("hud-content");
+const cofKeyHighlight = document.getElementById("cof-key-highlight");
+const cofChordHighlight = document.getElementById("cof-chord-highlight");
+const cofCenterKey = document.getElementById("cof-center-key");
+const cofCaption = document.getElementById("cof-caption");
+const hudChordName = document.getElementById("hud-chord-name");
+const hudChordFn = document.getElementById("hud-chord-fn");
+const hudDegreeChips = document.getElementById("hud-degree-chips");
+const droneToggle = document.getElementById("drone-toggle");
+const droneNote = document.getElementById("drone-note");
+const droneVolumeInput = document.getElementById("drone-volume");
+
+// Static per pitch class (0–11) — built once, since the circle-of-fifths SVG
+// never gets rebuilt (see updateHudAnalysis), only its highlight toggled.
+const cofLabelsByPc = new Map(Array.from({ length: 12 }, (_, pc) => [pc, {}]));
+document.querySelectorAll(".cof-major-labels text[data-pc]").forEach((el) => {
+  cofLabelsByPc.get(Number(el.dataset.pc)).major = el;
+});
+document.querySelectorAll(".cof-minor-labels text[data-pc]").forEach((el) => {
+  cofLabelsByPc.get(Number(el.dataset.pc)).minor = el;
+});
 
 const player = new Player();
+// Currently-held MIDI notes, tracked independently of whether a piece/matcher
+// exists — this is what lets the HUD (and, later, Free Play) read "what's
+// being played right now" without caring whether practice mode is active.
+let heldMidiNotes = new Set();
 
 // The piece's original (untransposed) key, detected once per load, and the
 // currently-effective key after applying the piece's transposeSemitones
@@ -111,6 +138,7 @@ function setMainView(view) {
     keyPill.hidden = true;
     settingsPopover.hidden = true;
     settingsGear.setAttribute("aria-expanded", "false");
+    updateHudAnalysis();
   }
   for (const [key, panel] of Object.entries(MAIN_PANELS)) {
     panel.hidden = key !== view;
@@ -141,6 +169,94 @@ function updateTransposeStepperLabel() {
   transposeReset.hidden = !isTransposed;
   if (isTransposed) transposeReset.textContent = `Reset to original key (${describeTargetKey(sourceKeyInfo, 0).name})`;
 }
+
+// Moves the shared highlight circle for "key" or "chord" onto whichever
+// ring label matches (pitchClass, mode) — or clears it if pitchClass is
+// null. Never touches the SVG's structure, just a couple of attributes and
+// classes, so this is cheap enough to call on every MIDI event.
+function setCofHighlight(kind, pitchClass, mode) {
+  const circle = kind === "key" ? cofKeyHighlight : cofChordHighlight;
+  const cssClass = kind === "key" ? "cof-is-key" : "cof-is-chord";
+
+  document.querySelectorAll(`.${cssClass}`).forEach((el) => el.classList.remove(cssClass));
+  circle.classList.remove("cof-active");
+  if (pitchClass == null) return;
+
+  const label = cofLabelsByPc.get(pitchClass)?.[mode === "minor" ? "minor" : "major"];
+  if (!label) return;
+  label.classList.add(cssClass);
+  circle.setAttribute("cx", label.getAttribute("x"));
+  circle.setAttribute("cy", Number(label.getAttribute("y")) - 4);
+  circle.classList.add("cof-active");
+}
+
+// The HUD's single entry point — called after every held-note change and
+// every key change (piece open, transpose step). Ambient/passive by design:
+// never touches matcher state, only reads effectiveKeyInfo/heldMidiNotes.
+function updateHudAnalysis() {
+  if (!effectiveKeyInfo) {
+    hudPlaceholder.hidden = false;
+    hudContent.hidden = true;
+    if (player.droneActive) {
+      player.stopDrone();
+      droneToggle.setAttribute("aria-pressed", "false");
+    }
+    return;
+  }
+  hudPlaceholder.hidden = true;
+  hudContent.hidden = false;
+
+  const tonicName = keyName(effectiveKeyInfo.pitchClass, effectiveKeyInfo.mode);
+  setCofHighlight("key", effectiveKeyInfo.pitchClass, effectiveKeyInfo.mode);
+  cofCenterKey.textContent = tonicName;
+  droneNote.textContent = tonicName;
+  if (player.droneActive) player.startDrone(60 + effectiveKeyInfo.pitchClass);
+
+  const heldNotes = Array.from(heldMidiNotes);
+  if (heldNotes.length === 0) {
+    setCofHighlight("chord", null, null);
+    hudChordName.textContent = "—";
+    hudChordFn.textContent = "";
+    hudDegreeChips.innerHTML = "";
+    cofCaption.textContent = `Key center ${tonicName}`;
+    return;
+  }
+
+  const chord = detectChord(heldNotes);
+  if (chord) {
+    setCofHighlight("chord", chord.root, isMinorQuality(chord.quality) ? "minor" : "major");
+    hudChordName.textContent = chord.name;
+    hudChordFn.innerHTML = `${describeChordInKey(chord, effectiveKeyInfo)} <span class="in">in ${tonicName} ${effectiveKeyInfo.mode}</span>`;
+  } else {
+    setCofHighlight("chord", null, null);
+    hudChordName.textContent = "—";
+    hudChordFn.textContent = "No chord match";
+  }
+
+  const pitchClasses = [...new Set(heldNotes.map((m) => ((m % 12) + 12) % 12))].sort((a, b) => a - b);
+  hudDegreeChips.innerHTML = pitchClasses
+    .map((pc) => {
+      const isTonic = pc === effectiveKeyInfo.pitchClass;
+      return `<div class="degchip${isTonic ? " tonic" : ""}"><span class="deg">${degreeLabel(pc, effectiveKeyInfo)}</span><span class="nn">${pitchClassName(pc)}</span></div>`;
+    })
+    .join("");
+  cofCaption.textContent = `Key center ${tonicName}`;
+}
+
+droneToggle.addEventListener("click", () => {
+  if (player.droneActive) {
+    player.stopDrone();
+    droneToggle.setAttribute("aria-pressed", "false");
+    return;
+  }
+  if (!effectiveKeyInfo) return;
+  player.startDrone(60 + effectiveKeyInfo.pitchClass);
+  droneToggle.setAttribute("aria-pressed", "true");
+});
+
+droneVolumeInput.addEventListener("input", () => {
+  player.setDroneVolume(Number(droneVolumeInput.value) / 100);
+});
 
 // fileName/createdAt must always ride along with every progress write — put()
 // replaces the whole record, so a write that omits them wipes them out, which
@@ -923,6 +1039,7 @@ async function openPiece(id) {
     keyPill.hidden = false;
     keyPillLabel.textContent = effectiveKeyInfo.name;
     updateTransposeStepperLabel();
+    updateHudAnalysis();
 
     if (currentEntry.settings.transposeSemitones) {
       transposeMusicXml(parsedDoc, currentEntry.settings.transposeSemitones);
@@ -1107,6 +1224,13 @@ function logMidiEvent(event) {
   while (logEl.children.length > MAX_LOG_ENTRIES) {
     logEl.removeChild(logEl.lastChild);
   }
+
+  if (event.type === "on") {
+    heldMidiNotes.add(event.note);
+  } else {
+    heldMidiNotes.delete(event.note);
+  }
+  updateHudAnalysis();
 
   if (matcher) {
     if (event.type === "on") {
