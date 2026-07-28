@@ -2,15 +2,15 @@
 // cache lifetime, combined with browsers not always revalidating on a plain
 // reload, has repeatedly served stale JS after a deploy in testing. Bump
 // this string (e.g. to today's date) whenever you deploy a real change.
-import { initMidi, midiNoteToName } from "./midi.js?v=20260727-4";
+import { initMidi, midiNoteToName } from "./midi.js?v=20260727-5";
 import {
   NoteMatcher,
   getStaffPositionForNote,
   getNotePixelPosition,
   walkPiece,
   extractPlaybackNotes,
-} from "./matching.js?v=20260727-4";
-import { Player } from "./playback.js?v=20260727-4";
+} from "./matching.js?v=20260727-5";
+import { Player } from "./playback.js?v=20260727-5";
 import {
   putFileContent,
   getFileContent,
@@ -20,9 +20,9 @@ import {
   getProgress,
   getAllProgress,
   deleteProgress,
-} from "./db.js?v=20260727-4";
-import { renderLibraryList, readUploadedFile } from "./library.js?v=20260727-4";
-import { transposeMusicXml, detectSourceKey, describeTargetKey } from "./transpose.js?v=20260727-4";
+} from "./db.js?v=20260727-5";
+import { renderLibraryList, readUploadedFile } from "./library.js?v=20260727-5";
+import { transposeMusicXml, detectSourceKey, describeTargetKey } from "./transpose.js?v=20260727-5";
 
 const SAMPLE_FILE_URL = "samples/sample-grand-staff.musicxml";
 const SAMPLE_FILE_NAME = "Sample Grand Staff Exercise.musicxml";
@@ -222,6 +222,15 @@ function renderExpectedNotes(expected) {
   );
   el.textContent = `Waiting for — ${parts.join("   |   ")}`;
   el.classList.remove("complete");
+
+  // The overlay carves a gap around the cursor's current position (see
+  // redrawInactiveOverlay) — as the cursor advances, that gap needs to move
+  // with it, or the piece would end up with a stale ungreyed hole wherever
+  // the cursor used to be. Skipped in the common case (nothing greyed) to
+  // keep the hot advance path free of unnecessary DOM work.
+  if (matcher.handMode !== "both" || matcher.sectionStart != null) {
+    redrawInactiveOverlay();
+  }
 
   // Section practice loops independently of the piece's overall saved
   // position — don't let a loop overwrite where the user last resumed to.
@@ -499,6 +508,45 @@ const INACTIVE_OVERLAY_OPACITY = 0.65;
 // #F6F1E6 -> #EFE7D6) so the wash blends in instead of showing as a seam.
 const INACTIVE_OVERLAY_FILL = "#F2ECDE";
 
+// OSMD's cursor is a plain <img> (cursorImg-0), a *sibling* of the SVG rather
+// than an element inside it, deliberately given a negative z-index so it
+// shows through the SVG's transparent (non-inked) areas without covering the
+// notation ink. That means anything we add *inside* the SVG — including this
+// overlay — always paints above it regardless of internal ordering: there's
+// no z-index trick that fixes this from within the SVG. The fix is to carve
+// the cursor's own horizontal slice out of every overlay rect we draw.
+function getCursorXRange() {
+  const cursorImg = document.getElementById("cursorImg-0");
+  if (!cursorImg || cursorImg.style.display === "none") return null;
+  const left = parseFloat(cursorImg.style.left);
+  const width = cursorImg.width;
+  if (!Number.isFinite(left) || !width) return null;
+  return { left, right: left + width };
+}
+
+// Draws `rect(left..right, y, height)`, minus whatever slice of it overlaps
+// `cursorRange` (splitting into up to two rects around the gap).
+function addOverlayRect(svg, left, right, y, height, cursorRange) {
+  const segments = [[left, right]];
+  if (cursorRange && cursorRange.left < right && cursorRange.right > left) {
+    segments.length = 0;
+    if (cursorRange.left > left) segments.push([left, cursorRange.left]);
+    if (cursorRange.right < right) segments.push([cursorRange.right, right]);
+  }
+  for (const [segLeft, segRight] of segments) {
+    if (segRight <= segLeft) continue;
+    const rect = document.createElementNS(SVG_NS, "rect");
+    rect.setAttribute("x", segLeft);
+    rect.setAttribute("width", segRight - segLeft);
+    rect.setAttribute("y", y);
+    rect.setAttribute("height", height);
+    rect.setAttribute("fill", INACTIVE_OVERLAY_FILL);
+    rect.setAttribute("fill-opacity", String(INACTIVE_OVERLAY_OPACITY));
+    rect.setAttribute("class", "inactive-overlay");
+    svg.appendChild(rect);
+  }
+}
+
 // Greys out whichever staff/measure combinations are either the deselected
 // hand or outside the active practice section (both conditions checked
 // together, since either can apply at once — right-hand-only *and* a
@@ -515,6 +563,7 @@ function redrawInactiveOverlay() {
   svg.querySelectorAll(".inactive-overlay").forEach((el) => el.remove());
 
   const { handMode, sectionStart, sectionEnd } = matcher;
+  const cursorRange = getCursorXRange();
 
   for (const system of measureSystems) {
     for (const [staffIdStr, band] of Object.entries(system.staffBands)) {
@@ -532,15 +581,14 @@ function redrawInactiveOverlay() {
 
         const left = zone.leftBound === -Infinity ? zone.minX - INACTIVE_OVERLAY_PADDING : zone.leftBound;
         const right = zone.rightBound === Infinity ? zone.maxX + INACTIVE_OVERLAY_PADDING : zone.rightBound;
-        const rect = document.createElementNS(SVG_NS, "rect");
-        rect.setAttribute("x", left);
-        rect.setAttribute("width", right - left);
-        rect.setAttribute("y", band.minY - INACTIVE_OVERLAY_PADDING);
-        rect.setAttribute("height", band.maxY - band.minY + INACTIVE_OVERLAY_PADDING * 2);
-        rect.setAttribute("fill", INACTIVE_OVERLAY_FILL);
-        rect.setAttribute("fill-opacity", String(INACTIVE_OVERLAY_OPACITY));
-        rect.setAttribute("class", "inactive-overlay");
-        svg.appendChild(rect);
+        addOverlayRect(
+          svg,
+          left,
+          right,
+          band.minY - INACTIVE_OVERLAY_PADDING,
+          band.maxY - band.minY + INACTIVE_OVERLAY_PADDING * 2,
+          cursorRange
+        );
       }
     }
   }
@@ -819,6 +867,9 @@ osmdContainer.addEventListener("click", (event) => {
   if (stepIndex == null) return;
   heldNoteMarkers = new Map();
   matcher.start(stepIndex);
+  if (matcher.handMode !== "both" || matcher.sectionStart != null) {
+    redrawInactiveOverlay();
+  }
 });
 
 // Live preview while picking a section: a thin green bar (same style as the
