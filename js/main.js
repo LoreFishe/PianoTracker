@@ -2,15 +2,15 @@
 // cache lifetime, combined with browsers not always revalidating on a plain
 // reload, has repeatedly served stale JS after a deploy in testing. Bump
 // this string (e.g. to today's date) whenever you deploy a real change.
-import { initMidi, midiNoteToName } from "./midi.js?v=20260727-3";
+import { initMidi, midiNoteToName } from "./midi.js?v=20260727-4";
 import {
   NoteMatcher,
   getStaffPositionForNote,
   getNotePixelPosition,
   walkPiece,
   extractPlaybackNotes,
-} from "./matching.js?v=20260727-3";
-import { Player } from "./playback.js?v=20260727-3";
+} from "./matching.js?v=20260727-4";
+import { Player } from "./playback.js?v=20260727-4";
 import {
   putFileContent,
   getFileContent,
@@ -20,9 +20,9 @@ import {
   getProgress,
   getAllProgress,
   deleteProgress,
-} from "./db.js?v=20260727-3";
-import { renderLibraryList, readUploadedFile } from "./library.js?v=20260727-3";
-import { transposeMusicXml, detectSourceKey, describeTargetKey } from "./transpose.js?v=20260727-3";
+} from "./db.js?v=20260727-4";
+import { renderLibraryList, readUploadedFile } from "./library.js?v=20260727-4";
+import { transposeMusicXml, detectSourceKey, describeTargetKey } from "./transpose.js?v=20260727-4";
 
 const SAMPLE_FILE_URL = "samples/sample-grand-staff.musicxml";
 const SAMPLE_FILE_NAME = "Sample Grand Staff Exercise.musicxml";
@@ -67,6 +67,7 @@ const settingsPopoverSubtitle = document.getElementById("settings-popover-subtit
 const transposePrev = document.getElementById("transpose-prev");
 const transposeNext = document.getElementById("transpose-next");
 const transposeCurrent = document.getElementById("transpose-current");
+const transposeReset = document.getElementById("transpose-reset");
 
 const player = new Player();
 
@@ -135,6 +136,10 @@ function updateTransposeStepperLabel() {
   if (!currentEntry || !effectiveKeyInfo) return;
   transposeCurrent.textContent = effectiveKeyInfo.name;
   settingsPopoverSubtitle.textContent = currentEntry.fileName;
+
+  const isTransposed = currentEntry.settings.transposeSemitones !== 0;
+  transposeReset.hidden = !isTransposed;
+  if (isTransposed) transposeReset.textContent = `Reset to original key (${describeTargetKey(sourceKeyInfo, 0).name})`;
 }
 
 // Persists the new transpose setting, then fully reloads the piece — the same
@@ -490,6 +495,9 @@ function findNearestMeasureZone(systems, x, y) {
 // too-tight overlay left them poking out looking still "active".
 const INACTIVE_OVERLAY_PADDING = 60;
 const INACTIVE_OVERLAY_OPACITY = 0.65;
+// Flat approximation of #osmd-container's paper gradient (css/styles.css,
+// #F6F1E6 -> #EFE7D6) so the wash blends in instead of showing as a seam.
+const INACTIVE_OVERLAY_FILL = "#F2ECDE";
 
 // Greys out whichever staff/measure combinations are either the deselected
 // hand or outside the active practice section (both conditions checked
@@ -529,7 +537,7 @@ function redrawInactiveOverlay() {
         rect.setAttribute("width", right - left);
         rect.setAttribute("y", band.minY - INACTIVE_OVERLAY_PADDING);
         rect.setAttribute("height", band.maxY - band.minY + INACTIVE_OVERLAY_PADDING * 2);
-        rect.setAttribute("fill", "#f7f7f8"); // matches body background (css/styles.css) so the wash blends in instead of showing as a seam
+        rect.setAttribute("fill", INACTIVE_OVERLAY_FILL);
         rect.setAttribute("fill-opacity", String(INACTIVE_OVERLAY_OPACITY));
         rect.setAttribute("class", "inactive-overlay");
         svg.appendChild(rect);
@@ -932,6 +940,10 @@ transposePrev.addEventListener("click", () => {
 
 transposeNext.addEventListener("click", () => {
   if (currentEntry) setTransposeSemitones(currentEntry.settings.transposeSemitones + 1);
+});
+
+transposeReset.addEventListener("click", () => {
+  if (currentEntry) setTransposeSemitones(0);
 });
 
 for (const button of handModeButtons) {

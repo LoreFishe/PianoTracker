@@ -680,6 +680,24 @@ button {
   letter-spacing: 0.03em;
 }
 
+.reset-key {
+  display: block;
+  margin-top: 9px;
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px;
+  color: var(--verdigris);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.reset-key:hover {
+  color: var(--txt);
+}
+
 .toggle-row {
   display: flex;
   align-items: center;
