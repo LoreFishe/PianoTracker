@@ -2,15 +2,15 @@
 // cache lifetime, combined with browsers not always revalidating on a plain
 // reload, has repeatedly served stale JS after a deploy in testing. Bump
 // this string (e.g. to today's date) whenever you deploy a real change.
-import { initMidi, midiNoteToName } from "./midi.js?v=20260727-9";
+import { initMidi, midiNoteToName } from "./midi.js?v=20260727-10";
 import {
   NoteMatcher,
   getStaffPositionForNote,
   getNotePixelPosition,
   walkPiece,
   extractPlaybackNotes,
-} from "./matching.js?v=20260727-9";
-import { Player } from "./playback.js?v=20260727-9";
+} from "./matching.js?v=20260727-10";
+import { Player } from "./playback.js?v=20260727-10";
 import {
   putFileContent,
   getFileContent,
@@ -20,9 +20,9 @@ import {
   getProgress,
   getAllProgress,
   deleteProgress,
-} from "./db.js?v=20260727-9";
-import { renderLibraryList, readUploadedFile } from "./library.js?v=20260727-9";
-import { transposeMusicXml, detectSourceKey, describeTargetKey } from "./transpose.js?v=20260727-9";
+} from "./db.js?v=20260727-10";
+import { renderLibraryList, readUploadedFile } from "./library.js?v=20260727-10";
+import { transposeMusicXml, detectSourceKey, describeTargetKey } from "./transpose.js?v=20260727-10";
 
 const SAMPLE_FILE_URL = "samples/sample-grand-staff.musicxml";
 const SAMPLE_FILE_NAME = "Sample Grand Staff Exercise.musicxml";
@@ -481,6 +481,20 @@ function buildMeasureZones(cache, osmd) {
   return { zones, systems };
 }
 
+// Rebuilds pieceNoteCache/measureZones/measureSystems from whatever's
+// currently rendered. Needs re-running any time OSMD re-lays-out the score
+// at a different width — its own autoResize does this on window resize with
+// no public "resize complete" hook to key off of, and without a rebuild
+// every cached note/measure position silently drifts away from what's
+// actually on screen (this is what made the section-selection preview bar,
+// click-to-select, and the inactive-hand/section grey-out all appear to
+// snap to the wrong spots after resizing the browser window).
+function rebuildPieceNoteGeometry() {
+  if (!osmdInstance) return;
+  pieceNoteCache = buildPieceNoteCache(osmdInstance);
+  ({ zones: measureZones, systems: measureSystems } = buildMeasureZones(pieceNoteCache, osmdInstance));
+}
+
 // Takes `measureSystems` (already grouped by OSMD's authoritative line
 // membership, see buildMeasureZones) rather than a flat zone list, so
 // "nearest line" is resolved by real system bounds instead of re-clustering
@@ -915,8 +929,7 @@ async function openPiece(id) {
     }
     await osmd.load(parsedDoc);
     osmd.render();
-    pieceNoteCache = buildPieceNoteCache(osmd);
-    ({ zones: measureZones, systems: measureSystems } = buildMeasureZones(pieceNoteCache, osmd));
+    rebuildPieceNoteGeometry();
     // Needs pieceNoteCache populated first, since chip labels look up
     // measure numbers from it.
     renderSavedSections();
@@ -1002,6 +1015,25 @@ hudToggle.addEventListener("click", () => {
   hudEl.hidden = !open;
   hudToggle.classList.toggle("on", open);
   hudToggle.setAttribute("aria-pressed", String(open));
+});
+
+// OSMD re-lays-out the whole score on window resize on its own (autoResize),
+// with its own internal debounce and no public "it's done" callback — this
+// just needs to run comfortably after that settles, not react to every
+// resize tick itself.
+let resizeRebuildTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeRebuildTimer);
+  resizeRebuildTimer = setTimeout(() => {
+    if (!osmdInstance) return;
+    rebuildPieceNoteGeometry();
+    redrawInactiveOverlay();
+    // OSMD's own re-layout also leaves the cursor desynced from the matcher
+    // (matching against the old position kept working, but never advancing) —
+    // re-fast-forwarding to the same absolute step re-syncs it without
+    // disturbing sectionStart/sectionEnd or currently-held notes.
+    if (matcher) matcher.start(matcher.totalAdvances);
+  }, 500);
 });
 
 hudClose.addEventListener("click", () => {
