@@ -2,15 +2,15 @@
 // cache lifetime, combined with browsers not always revalidating on a plain
 // reload, has repeatedly served stale JS after a deploy in testing. Bump
 // this string (e.g. to today's date) whenever you deploy a real change.
-import { initMidi, midiNoteToName } from "./midi.js?v=20260727-6";
+import { initMidi, midiNoteToName } from "./midi.js?v=20260727-7";
 import {
   NoteMatcher,
   getStaffPositionForNote,
   getNotePixelPosition,
   walkPiece,
   extractPlaybackNotes,
-} from "./matching.js?v=20260727-6";
-import { Player } from "./playback.js?v=20260727-6";
+} from "./matching.js?v=20260727-7";
+import { Player } from "./playback.js?v=20260727-7";
 import {
   putFileContent,
   getFileContent,
@@ -20,9 +20,9 @@ import {
   getProgress,
   getAllProgress,
   deleteProgress,
-} from "./db.js?v=20260727-6";
-import { renderLibraryList, readUploadedFile } from "./library.js?v=20260727-6";
-import { transposeMusicXml, detectSourceKey, describeTargetKey } from "./transpose.js?v=20260727-6";
+} from "./db.js?v=20260727-7";
+import { renderLibraryList, readUploadedFile } from "./library.js?v=20260727-7";
+import { transposeMusicXml, detectSourceKey, describeTargetKey } from "./transpose.js?v=20260727-7";
 
 const SAMPLE_FILE_URL = "samples/sample-grand-staff.musicxml";
 const SAMPLE_FILE_NAME = "Sample Grand Staff Exercise.musicxml";
@@ -507,6 +507,9 @@ const INACTIVE_OVERLAY_OPACITY = 0.65;
 // Flat approximation of #osmd-container's paper gradient (css/styles.css,
 // #F6F1E6 -> #EFE7D6) so the wash blends in instead of showing as a seam.
 const INACTIVE_OVERLAY_FILL = "#F2ECDE";
+// px; wide enough to cover a notehead + stem base, much narrower than the
+// cursor's own ~30px width — see the cursor-gap patch in redrawInactiveOverlay.
+const CURSOR_NOTE_PATCH_WIDTH = 16;
 
 // OSMD's cursor is a plain <img> (cursorImg-0), a *sibling* of the SVG rather
 // than an element inside it, deliberately given a negative z-index so it
@@ -566,6 +569,10 @@ function redrawInactiveOverlay() {
 
   const { handMode, sectionStart, sectionEnd } = matcher;
   const cursorRect = getCursorRect();
+  // The gap that keeps the cursor's background vivid (below) also exposes
+  // whichever note sits at the cursor's own step, if it belongs to an
+  // inactive hand — pieceNoteCache lookup for patching that back in below.
+  const currentStepEntries = cursorRect ? pieceNoteCache.filter((e) => e.stepIndex === matcher.totalAdvances) : [];
 
   for (const system of measureSystems) {
     for (const [staffIdStr, band] of Object.entries(system.staffBands)) {
@@ -591,6 +598,24 @@ function redrawInactiveOverlay() {
         const left = zone.leftBound === -Infinity ? zone.minX - INACTIVE_OVERLAY_PADDING : zone.leftBound;
         const right = zone.rightBound === Infinity ? zone.maxX + INACTIVE_OVERLAY_PADDING : zone.rightBound;
         addOverlayRect(svg, left, right, bandTop, bandBottom - bandTop, cursorRange);
+      }
+
+      // Patch the cursor's own note back in for this band, narrower than the
+      // cursor itself — just enough to greyed the notehead/stem, not the
+      // blank background around it that needs to stay vivid.
+      if (!handOk && cursorRange) {
+        for (const entry of currentStepEntries) {
+          if (entry.staffId !== staffId || entry.x == null) continue;
+          if (entry.x < cursorRange.left || entry.x > cursorRange.right) continue;
+          addOverlayRect(
+            svg,
+            entry.x - CURSOR_NOTE_PATCH_WIDTH / 2,
+            entry.x + CURSOR_NOTE_PATCH_WIDTH / 2,
+            bandTop,
+            bandBottom - bandTop,
+            null
+          );
+        }
       }
     }
   }
