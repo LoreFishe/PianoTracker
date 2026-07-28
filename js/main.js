@@ -2,15 +2,15 @@
 // cache lifetime, combined with browsers not always revalidating on a plain
 // reload, has repeatedly served stale JS after a deploy in testing. Bump
 // this string (e.g. to today's date) whenever you deploy a real change.
-import { initMidi, midiNoteToName } from "./midi.js?v=20260727-8";
+import { initMidi, midiNoteToName } from "./midi.js?v=20260727-9";
 import {
   NoteMatcher,
   getStaffPositionForNote,
   getNotePixelPosition,
   walkPiece,
   extractPlaybackNotes,
-} from "./matching.js?v=20260727-8";
-import { Player } from "./playback.js?v=20260727-8";
+} from "./matching.js?v=20260727-9";
+import { Player } from "./playback.js?v=20260727-9";
 import {
   putFileContent,
   getFileContent,
@@ -20,9 +20,9 @@ import {
   getProgress,
   getAllProgress,
   deleteProgress,
-} from "./db.js?v=20260727-8";
-import { renderLibraryList, readUploadedFile } from "./library.js?v=20260727-8";
-import { transposeMusicXml, detectSourceKey, describeTargetKey } from "./transpose.js?v=20260727-8";
+} from "./db.js?v=20260727-9";
+import { renderLibraryList, readUploadedFile } from "./library.js?v=20260727-9";
+import { transposeMusicXml, detectSourceKey, describeTargetKey } from "./transpose.js?v=20260727-9";
 
 const SAMPLE_FILE_URL = "samples/sample-grand-staff.musicxml";
 const SAMPLE_FILE_NAME = "Sample Grand Staff Exercise.musicxml";
@@ -142,6 +142,23 @@ function updateTransposeStepperLabel() {
   if (isTransposed) transposeReset.textContent = `Reset to original key (${describeTargetKey(sourceKeyInfo, 0).name})`;
 }
 
+// fileName/createdAt must always ride along with every progress write — put()
+// replaces the whole record, so a write that omits them wipes them out, which
+// makes getLibraryEntries() treat the piece as "legacy" again and re-trigger
+// the exact full-content backfill this duplication exists to avoid. A single
+// builder means every write site gets this for free instead of needing to
+// remember it.
+function buildProgressRecord() {
+  return {
+    id: currentEntry.id,
+    fileName: currentEntry.fileName,
+    createdAt: currentEntry.createdAt,
+    settings: currentEntry.settings,
+    progress: currentEntry.progress,
+    updatedAt: currentEntry.updatedAt,
+  };
+}
+
 // Persists the new transpose setting, then fully reloads the piece — the same
 // path openPiece already uses, so the note cache/matcher/section zones are
 // rebuilt fresh against the new pitches. Resuming mid-piece across a key
@@ -154,31 +171,44 @@ async function setTransposeSemitones(newValue) {
   currentEntry.settings.transposeSemitones = ((newValue % 12) + 12) % 12;
   currentEntry.updatedAt = Date.now();
   try {
-    await putProgress({
-      id: currentEntry.id,
-      settings: currentEntry.settings,
-      progress: currentEntry.progress,
-      updatedAt: currentEntry.updatedAt,
-    });
+    await putProgress(buildProgressRecord());
   } catch (err) {
     console.error("Failed to save progress:", err);
   }
   await openPiece(currentEntry.id);
 }
 
+// Sourced entirely from the (small) progress store — fileName/createdAt are
+// duplicated into progress records at write time (see putFileContent call
+// sites) specifically so the sidebar never has to touch getAllFileContents,
+// which returns every piece's full MusicXML text. That used to run on every
+// view switch, piece open, and transpose step, pulling megabytes of text out
+// of IndexedDB just to render a filename list. Records written before this
+// duplication existed (fileName missing) are self-healed once here, the only
+// remaining path that reads full content just to list the library.
 async function getLibraryEntries() {
-  const [files, progressRecords] = await Promise.all([getAllFileContents(), getAllProgress()]);
-  const progressById = new Map(progressRecords.map((p) => [p.id, p]));
-  return files.map((file) => {
-    const p = progressById.get(file.id);
-    return {
-      id: file.id,
-      fileName: file.fileName,
-      settings: p?.settings ?? DEFAULT_SETTINGS,
-      progress: p?.progress ?? defaultProgress(),
-      updatedAt: p?.updatedAt ?? file.createdAt,
-    };
-  });
+  const progressRecords = await getAllProgress();
+  const legacyRecords = progressRecords.filter((p) => !p.fileName);
+  if (legacyRecords.length > 0) {
+    const files = await getAllFileContents();
+    const fileById = new Map(files.map((f) => [f.id, f]));
+    for (const p of legacyRecords) {
+      const file = fileById.get(p.id);
+      if (!file) continue;
+      p.fileName = file.fileName;
+      p.createdAt = file.createdAt;
+      putProgress(p).catch((err) => console.error("Failed to backfill library entry:", err));
+    }
+  }
+  return progressRecords
+    .filter((p) => p.fileName)
+    .map((p) => ({
+      id: p.id,
+      fileName: p.fileName,
+      settings: p.settings ?? DEFAULT_SETTINGS,
+      progress: p.progress ?? defaultProgress(),
+      updatedAt: p.updatedAt ?? p.createdAt,
+    }));
 }
 
 async function refreshLibraryList() {
@@ -194,20 +224,15 @@ async function refreshLibraryList() {
   });
 }
 
-// Only the small { id, settings, progress, updatedAt } record is written here —
-// never the file's MusicXML text, which can be several MB. IndexedDB has no
-// partial-update API, so including it would mean re-serializing and rewriting
-// the whole score on every single note advance (this was the actual cause of
-// multi-second per-keystroke lag on real pieces).
+// Only the small progress record is written here — never the file's MusicXML
+// text, which can be several MB. IndexedDB has no partial-update API, so
+// including it would mean re-serializing and rewriting the whole score on
+// every single note advance (this was the actual cause of multi-second
+// per-keystroke lag on real pieces).
 function saveCurrentEntry() {
   if (!currentEntry) return;
   currentEntry.updatedAt = Date.now();
-  putProgress({
-    id: currentEntry.id,
-    settings: currentEntry.settings,
-    progress: currentEntry.progress,
-    updatedAt: currentEntry.updatedAt,
-  }).catch((err) => console.error("Failed to save progress:", err));
+  putProgress(buildProgressRecord()).catch((err) => console.error("Failed to save progress:", err));
 }
 
 function renderExpectedNotes(expected) {
@@ -848,7 +873,7 @@ async function openPiece(id) {
   // file was first saved — like hand mode — still get a sane value.
   const settings = { ...DEFAULT_SETTINGS, ...progressRecord?.settings };
   const progress = { ...defaultProgress(), ...progressRecord?.progress };
-  currentEntry = { id, fileName: fileContent.fileName, settings, progress };
+  currentEntry = { id, fileName: fileContent.fileName, createdAt: fileContent.createdAt, settings, progress };
 
   setMainView("practice");
   document.getElementById("practice-title").textContent = fileContent.fileName;
@@ -875,6 +900,9 @@ async function openPiece(id) {
     });
     osmdInstance = osmd;
 
+    // Parsed once and reused for both key detection and the actual load —
+    // passing the Document straight to osmd.load() (it accepts one directly)
+    // also saves OSMD from re-parsing the same text a second time itself.
     const parsedDoc = new DOMParser().parseFromString(fileContent.musicXmlText, "application/xml");
     sourceKeyInfo = detectSourceKey(parsedDoc);
     effectiveKeyInfo = describeTargetKey(sourceKeyInfo, currentEntry.settings.transposeSemitones);
@@ -882,10 +910,10 @@ async function openPiece(id) {
     keyPillLabel.textContent = effectiveKeyInfo.name;
     updateTransposeStepperLabel();
 
-    const scoreToLoad = currentEntry.settings.transposeSemitones
-      ? transposeMusicXml(fileContent.musicXmlText, currentEntry.settings.transposeSemitones)
-      : fileContent.musicXmlText;
-    await osmd.load(scoreToLoad);
+    if (currentEntry.settings.transposeSemitones) {
+      transposeMusicXml(parsedDoc, currentEntry.settings.transposeSemitones);
+    }
+    await osmd.load(parsedDoc);
     osmd.render();
     pieceNoteCache = buildPieceNoteCache(osmd);
     ({ zones: measureZones, systems: measureSystems } = buildMeasureZones(pieceNoteCache, osmd));
@@ -995,7 +1023,7 @@ fileUpload.addEventListener("change", async () => {
     const now = Date.now();
     await Promise.all([
       putFileContent({ id, fileName: file.name, musicXmlText, createdAt: now }),
-      putProgress({ id, settings: { ...DEFAULT_SETTINGS }, progress: defaultProgress(), updatedAt: now }),
+      putProgress({ id, fileName: file.name, createdAt: now, settings: { ...DEFAULT_SETTINGS }, progress: defaultProgress(), updatedAt: now }),
     ]);
     fileUpload.value = "";
     openPiece(id);
@@ -1008,15 +1036,15 @@ fileUpload.addEventListener("change", async () => {
 });
 
 async function initLibrary() {
-  const files = await getAllFileContents();
-  if (files.length === 0) {
+  const progressRecords = await getAllProgress();
+  if (progressRecords.length === 0) {
     const response = await fetch(SAMPLE_FILE_URL);
     const musicXmlText = await response.text();
     const id = crypto.randomUUID();
     const now = Date.now();
     await Promise.all([
       putFileContent({ id, fileName: SAMPLE_FILE_NAME, musicXmlText, createdAt: now }),
-      putProgress({ id, settings: { ...DEFAULT_SETTINGS }, progress: defaultProgress(), updatedAt: now }),
+      putProgress({ id, fileName: SAMPLE_FILE_NAME, createdAt: now, settings: { ...DEFAULT_SETTINGS }, progress: defaultProgress(), updatedAt: now }),
     ]);
   }
   await refreshLibraryList();

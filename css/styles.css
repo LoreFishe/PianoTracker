@@ -781,14 +781,6 @@ button {
   flex-wrap: wrap;
 }
 
-.settings-toggle {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  color: var(--txt);
-  cursor: pointer;
-}
-
 #hand-mode-control {
   display: inline-flex;
   border: 1px solid var(--hair);

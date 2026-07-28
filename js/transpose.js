@@ -82,10 +82,11 @@ export function describeTargetKey(sourceKey, transposeSemitones) {
   };
 }
 
-/** Parses `musicXmlText` and transposes it up `transposeSemitones` (0–11)
- * semitones, returning the mutated Document (OSMD's load() accepts a
- * Document directly, so callers don't need to re-serialize). Every note is
- * shifted by the same generic (letter) + specific (semitone) interval —
+/** Transposes an already-parsed MusicXML `doc` in place, up `transposeSemitones`
+ * (0–11) semitones — callers that also need the source key (for a key pill,
+ * a stepper label) should parse once and pass the same Document to both
+ * detectSourceKey and here, rather than parsing the same text twice. Every
+ * note is shifted by the same generic (letter) + specific (semitone) interval —
  * reduced to whichever direction (up or down) stays within a tritone of the
  * original, so transposing "up 10 semitones" doesn't push the piece up
  * almost a full octave when "down 2" reaches the same pitch class. This is
@@ -93,8 +94,7 @@ export function describeTargetKey(sourceKey, transposeSemitones) {
  * scale tones — it's a pure transposition by interval, not a re-spelling
  * heuristic. Every <key><fifths> is shifted by the same delta, so internal
  * modulations stay consistent relative to the new tonic. */
-export function transposeMusicXml(musicXmlText, transposeSemitones) {
-  const doc = new DOMParser().parseFromString(musicXmlText, "application/xml");
+export function transposeMusicXml(doc, transposeSemitones) {
   if (!transposeSemitones) return doc;
 
   const sourceKey = detectSourceKey(doc);

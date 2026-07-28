@@ -1,6 +1,6 @@
 // OSMD's Note.halfTone uses a different zero point than MIDI note numbers;
 // empirically, MIDI note number = halfTone + 12 (verified against known XML octaves).
-export function midiFromNote(note) {
+function midiFromNote(note) {
   return note.halfTone + 12;
 }
 
