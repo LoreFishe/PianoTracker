@@ -935,6 +935,21 @@ button {
   cursor: crosshair;
 }
 
+/* OSMD's playback cursor is a plain <img> sibling of the SVG, given an
+   inline z-index: -1 so it shows through the SVG's transparent (non-inked)
+   areas without covering notation ink. That put it *behind* our inactive-
+   hand/section grey overlay too, which lives inside the SVG — so the wash
+   always dimmed the cursor no matter how carefully it was excluded around.
+   Bringing the cursor in front of the whole SVG instead means it paints as
+   a translucent highlight over whatever's beneath it (grey or black notes,
+   feedback markers) rather than being painted over — much closer to how a
+   highlighter marker actually reads. Needs !important: OSMD sets z-index
+   inline, which normal-importance external rules can't outrank regardless
+   of selector specificity. */
+#osmd-container img {
+  z-index: 5 !important;
+}
+
 #expected-notes {
   margin: 14px 22px 22px;
   padding: 0.9rem 1.2rem;

@@ -2,15 +2,15 @@
 // cache lifetime, combined with browsers not always revalidating on a plain
 // reload, has repeatedly served stale JS after a deploy in testing. Bump
 // this string (e.g. to today's date) whenever you deploy a real change.
-import { initMidi, midiNoteToName } from "./midi.js?v=20260727-7";
+import { initMidi, midiNoteToName } from "./midi.js?v=20260727-8";
 import {
   NoteMatcher,
   getStaffPositionForNote,
   getNotePixelPosition,
   walkPiece,
   extractPlaybackNotes,
-} from "./matching.js?v=20260727-7";
-import { Player } from "./playback.js?v=20260727-7";
+} from "./matching.js?v=20260727-8";
+import { Player } from "./playback.js?v=20260727-8";
 import {
   putFileContent,
   getFileContent,
@@ -20,9 +20,9 @@ import {
   getProgress,
   getAllProgress,
   deleteProgress,
-} from "./db.js?v=20260727-7";
-import { renderLibraryList, readUploadedFile } from "./library.js?v=20260727-7";
-import { transposeMusicXml, detectSourceKey, describeTargetKey } from "./transpose.js?v=20260727-7";
+} from "./db.js?v=20260727-8";
+import { renderLibraryList, readUploadedFile } from "./library.js?v=20260727-8";
+import { transposeMusicXml, detectSourceKey, describeTargetKey } from "./transpose.js?v=20260727-8";
 
 const SAMPLE_FILE_URL = "samples/sample-grand-staff.musicxml";
 const SAMPLE_FILE_NAME = "Sample Grand Staff Exercise.musicxml";
@@ -222,15 +222,6 @@ function renderExpectedNotes(expected) {
   );
   el.textContent = `Waiting for — ${parts.join("   |   ")}`;
   el.classList.remove("complete");
-
-  // The overlay carves a gap around the cursor's current position (see
-  // redrawInactiveOverlay) — as the cursor advances, that gap needs to move
-  // with it, or the piece would end up with a stale ungreyed hole wherever
-  // the cursor used to be. Skipped in the common case (nothing greyed) to
-  // keep the hot advance path free of unnecessary DOM work.
-  if (matcher.handMode !== "both" || matcher.sectionStart != null) {
-    redrawInactiveOverlay();
-  }
 
   // Section practice loops independently of the piece's overall saved
   // position — don't let a loop overwrite where the user last resumed to.
@@ -507,50 +498,6 @@ const INACTIVE_OVERLAY_OPACITY = 0.65;
 // Flat approximation of #osmd-container's paper gradient (css/styles.css,
 // #F6F1E6 -> #EFE7D6) so the wash blends in instead of showing as a seam.
 const INACTIVE_OVERLAY_FILL = "#F2ECDE";
-// px; wide enough to cover a notehead + stem base, much narrower than the
-// cursor's own ~30px width — see the cursor-gap patch in redrawInactiveOverlay.
-const CURSOR_NOTE_PATCH_WIDTH = 16;
-
-// OSMD's cursor is a plain <img> (cursorImg-0), a *sibling* of the SVG rather
-// than an element inside it, deliberately given a negative z-index so it
-// shows through the SVG's transparent (non-inked) areas without covering the
-// notation ink. That means anything we add *inside* the SVG — including this
-// overlay — always paints above it regardless of internal ordering: there's
-// no z-index trick that fixes this from within the SVG. The fix is to carve
-// the cursor's own rectangle out of the overlay bands it actually overlaps.
-function getCursorRect() {
-  const cursorImg = document.getElementById("cursorImg-0");
-  if (!cursorImg || cursorImg.style.display === "none") return null;
-  const left = parseFloat(cursorImg.style.left);
-  const top = parseFloat(cursorImg.style.top);
-  const width = cursorImg.width;
-  const height = cursorImg.height;
-  if (!Number.isFinite(left) || !Number.isFinite(top) || !width || !height) return null;
-  return { left, right: left + width, top, bottom: top + height };
-}
-
-// Draws `rect(left..right, y, height)`, minus whatever slice of it overlaps
-// `cursorRange` (splitting into up to two rects around the gap).
-function addOverlayRect(svg, left, right, y, height, cursorRange) {
-  const segments = [[left, right]];
-  if (cursorRange && cursorRange.left < right && cursorRange.right > left) {
-    segments.length = 0;
-    if (cursorRange.left > left) segments.push([left, cursorRange.left]);
-    if (cursorRange.right < right) segments.push([cursorRange.right, right]);
-  }
-  for (const [segLeft, segRight] of segments) {
-    if (segRight <= segLeft) continue;
-    const rect = document.createElementNS(SVG_NS, "rect");
-    rect.setAttribute("x", segLeft);
-    rect.setAttribute("width", segRight - segLeft);
-    rect.setAttribute("y", y);
-    rect.setAttribute("height", height);
-    rect.setAttribute("fill", INACTIVE_OVERLAY_FILL);
-    rect.setAttribute("fill-opacity", String(INACTIVE_OVERLAY_OPACITY));
-    rect.setAttribute("class", "inactive-overlay");
-    svg.appendChild(rect);
-  }
-}
 
 // Greys out whichever staff/measure combinations are either the deselected
 // hand or outside the active practice section (both conditions checked
@@ -562,29 +509,23 @@ function addOverlayRect(svg, left, right, y, height, cursorRange) {
 // stems/staff lines stayed black. This also means no osmd.render() call is
 // needed here at all, unlike the old notehead-recoloring approach: switching
 // hand mode or a section is now instant regardless of piece size.
+//
+// The playback cursor (OSMD's cursorImg, a plain <img> sibling of the SVG)
+// is brought in front of the whole SVG via #osmd-container img in
+// css/styles.css, specifically so it paints as a translucent highlight over
+// this overlay (and over the notation) rather than the overlay painting
+// over it — no gap-carving needed here as a result.
 function redrawInactiveOverlay() {
   const svg = osmdContainer.querySelector("svg");
   if (!svg || !matcher) return;
   svg.querySelectorAll(".inactive-overlay").forEach((el) => el.remove());
 
   const { handMode, sectionStart, sectionEnd } = matcher;
-  const cursorRect = getCursorRect();
-  // The gap that keeps the cursor's background vivid (below) also exposes
-  // whichever note sits at the cursor's own step, if it belongs to an
-  // inactive hand — pieceNoteCache lookup for patching that back in below.
-  const currentStepEntries = cursorRect ? pieceNoteCache.filter((e) => e.stepIndex === matcher.totalAdvances) : [];
 
   for (const system of measureSystems) {
     for (const [staffIdStr, band] of Object.entries(system.staffBands)) {
       const staffId = Number(staffIdStr);
       const handOk = handMode === "both" || (handMode === "right" && staffId === 1) || (handMode === "left" && staffId === 2);
-      const bandTop = band.minY - INACTIVE_OVERLAY_PADDING;
-      const bandBottom = band.maxY + INACTIVE_OVERLAY_PADDING;
-      // Only this specific band's row can visually collide with the cursor —
-      // excluding the cursor's X range from every OTHER system/band too
-      // (which happen to share the same X position on the page) would grey
-      // out nothing in their entire column, well beyond the cursor itself.
-      const cursorRange = cursorRect && cursorRect.top < bandBottom && cursorRect.bottom > bandTop ? cursorRect : null;
 
       for (const zone of system.zones) {
         // A repeated measure has multiple playback passes at this one printed
@@ -597,25 +538,15 @@ function redrawInactiveOverlay() {
 
         const left = zone.leftBound === -Infinity ? zone.minX - INACTIVE_OVERLAY_PADDING : zone.leftBound;
         const right = zone.rightBound === Infinity ? zone.maxX + INACTIVE_OVERLAY_PADDING : zone.rightBound;
-        addOverlayRect(svg, left, right, bandTop, bandBottom - bandTop, cursorRange);
-      }
-
-      // Patch the cursor's own note back in for this band, narrower than the
-      // cursor itself — just enough to greyed the notehead/stem, not the
-      // blank background around it that needs to stay vivid.
-      if (!handOk && cursorRange) {
-        for (const entry of currentStepEntries) {
-          if (entry.staffId !== staffId || entry.x == null) continue;
-          if (entry.x < cursorRange.left || entry.x > cursorRange.right) continue;
-          addOverlayRect(
-            svg,
-            entry.x - CURSOR_NOTE_PATCH_WIDTH / 2,
-            entry.x + CURSOR_NOTE_PATCH_WIDTH / 2,
-            bandTop,
-            bandBottom - bandTop,
-            null
-          );
-        }
+        const rect = document.createElementNS(SVG_NS, "rect");
+        rect.setAttribute("x", left);
+        rect.setAttribute("width", right - left);
+        rect.setAttribute("y", band.minY - INACTIVE_OVERLAY_PADDING);
+        rect.setAttribute("height", band.maxY - band.minY + INACTIVE_OVERLAY_PADDING * 2);
+        rect.setAttribute("fill", INACTIVE_OVERLAY_FILL);
+        rect.setAttribute("fill-opacity", String(INACTIVE_OVERLAY_OPACITY));
+        rect.setAttribute("class", "inactive-overlay");
+        svg.appendChild(rect);
       }
     }
   }
@@ -894,9 +825,6 @@ osmdContainer.addEventListener("click", (event) => {
   if (stepIndex == null) return;
   heldNoteMarkers = new Map();
   matcher.start(stepIndex);
-  if (matcher.handMode !== "both" || matcher.sectionStart != null) {
-    redrawInactiveOverlay();
-  }
 });
 
 // Live preview while picking a section: a thin green bar (same style as the
