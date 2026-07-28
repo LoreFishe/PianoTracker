@@ -2,15 +2,15 @@
 // cache lifetime, combined with browsers not always revalidating on a plain
 // reload, has repeatedly served stale JS after a deploy in testing. Bump
 // this string (e.g. to today's date) whenever you deploy a real change.
-import { initMidi, midiNoteToName } from "./midi.js?v=20260727-5";
+import { initMidi, midiNoteToName } from "./midi.js?v=20260727-6";
 import {
   NoteMatcher,
   getStaffPositionForNote,
   getNotePixelPosition,
   walkPiece,
   extractPlaybackNotes,
-} from "./matching.js?v=20260727-5";
-import { Player } from "./playback.js?v=20260727-5";
+} from "./matching.js?v=20260727-6";
+import { Player } from "./playback.js?v=20260727-6";
 import {
   putFileContent,
   getFileContent,
@@ -20,9 +20,9 @@ import {
   getProgress,
   getAllProgress,
   deleteProgress,
-} from "./db.js?v=20260727-5";
-import { renderLibraryList, readUploadedFile } from "./library.js?v=20260727-5";
-import { transposeMusicXml, detectSourceKey, describeTargetKey } from "./transpose.js?v=20260727-5";
+} from "./db.js?v=20260727-6";
+import { renderLibraryList, readUploadedFile } from "./library.js?v=20260727-6";
+import { transposeMusicXml, detectSourceKey, describeTargetKey } from "./transpose.js?v=20260727-6";
 
 const SAMPLE_FILE_URL = "samples/sample-grand-staff.musicxml";
 const SAMPLE_FILE_NAME = "Sample Grand Staff Exercise.musicxml";
@@ -514,14 +514,16 @@ const INACTIVE_OVERLAY_FILL = "#F2ECDE";
 // notation ink. That means anything we add *inside* the SVG — including this
 // overlay — always paints above it regardless of internal ordering: there's
 // no z-index trick that fixes this from within the SVG. The fix is to carve
-// the cursor's own horizontal slice out of every overlay rect we draw.
-function getCursorXRange() {
+// the cursor's own rectangle out of the overlay bands it actually overlaps.
+function getCursorRect() {
   const cursorImg = document.getElementById("cursorImg-0");
   if (!cursorImg || cursorImg.style.display === "none") return null;
   const left = parseFloat(cursorImg.style.left);
+  const top = parseFloat(cursorImg.style.top);
   const width = cursorImg.width;
-  if (!Number.isFinite(left) || !width) return null;
-  return { left, right: left + width };
+  const height = cursorImg.height;
+  if (!Number.isFinite(left) || !Number.isFinite(top) || !width || !height) return null;
+  return { left, right: left + width, top, bottom: top + height };
 }
 
 // Draws `rect(left..right, y, height)`, minus whatever slice of it overlaps
@@ -563,12 +565,19 @@ function redrawInactiveOverlay() {
   svg.querySelectorAll(".inactive-overlay").forEach((el) => el.remove());
 
   const { handMode, sectionStart, sectionEnd } = matcher;
-  const cursorRange = getCursorXRange();
+  const cursorRect = getCursorRect();
 
   for (const system of measureSystems) {
     for (const [staffIdStr, band] of Object.entries(system.staffBands)) {
       const staffId = Number(staffIdStr);
       const handOk = handMode === "both" || (handMode === "right" && staffId === 1) || (handMode === "left" && staffId === 2);
+      const bandTop = band.minY - INACTIVE_OVERLAY_PADDING;
+      const bandBottom = band.maxY + INACTIVE_OVERLAY_PADDING;
+      // Only this specific band's row can visually collide with the cursor —
+      // excluding the cursor's X range from every OTHER system/band too
+      // (which happen to share the same X position on the page) would grey
+      // out nothing in their entire column, well beyond the cursor itself.
+      const cursorRange = cursorRect && cursorRect.top < bandBottom && cursorRect.bottom > bandTop ? cursorRect : null;
 
       for (const zone of system.zones) {
         // A repeated measure has multiple playback passes at this one printed
@@ -581,14 +590,7 @@ function redrawInactiveOverlay() {
 
         const left = zone.leftBound === -Infinity ? zone.minX - INACTIVE_OVERLAY_PADDING : zone.leftBound;
         const right = zone.rightBound === Infinity ? zone.maxX + INACTIVE_OVERLAY_PADDING : zone.rightBound;
-        addOverlayRect(
-          svg,
-          left,
-          right,
-          band.minY - INACTIVE_OVERLAY_PADDING,
-          band.maxY - band.minY + INACTIVE_OVERLAY_PADDING * 2,
-          cursorRange
-        );
+        addOverlayRect(svg, left, right, bandTop, bandBottom - bandTop, cursorRange);
       }
     }
   }
